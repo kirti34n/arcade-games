@@ -10,16 +10,21 @@ Usage:
     play breakout     Play Breakout interactively
     play shooter      Play Space Shooter interactively
     play pong         Play Pong interactively
+    play flappy       Play Flappy Bird interactively
+    play mines        Play Minesweeper interactively
+    play pacman       Play Pac-Man interactively
 
-    play cli                  Show in-conversation game menu
-    play cli start snake      Start Snake (turn-based)
-    play cli start 2048       Start 2048
+    play cli                    Show in-conversation game menu
+    play cli start snake        Start Snake (turn-based)
+    play cli start 2048         Start 2048
     play cli start minesweeper  Start Minesweeper
-    play cli <move>           Make a move (up/down/left/right)
-    play cli reveal <r> <c>   Minesweeper: reveal cell
-    play cli flag <r> <c>     Minesweeper: toggle flag
-    play cli show             Show current board
-    play cli quit             End current game
+    play cli start connect4     Start Connect4
+    play cli <move>             Make a move (up/down/left/right)
+    play cli <1-7>              Connect4: drop in column
+    play cli reveal <r> <c>     Minesweeper: reveal cell
+    play cli flag <r> <c>       Minesweeper: toggle flag
+    play cli show               Show current board
+    play cli quit               End current game
 
     play --version    Show version
     play --help       Show this help
@@ -28,7 +33,7 @@ Install:
     pip install claude-games
 """
 
-__version__ = '2.3.0'
+__version__ = '2.4.0'
 
 import curses
 import json
@@ -127,18 +132,60 @@ def save_high_score(name: str, score: int):
     SCORES_FILE.write_text(json.dumps(scores, indent=2))
 
 
-# ─── Colors ──────────────────────────────────────────────────────────────────
+# ─── Colors & Themes ─────────────────────────────────────────────────────────
+
+_THEMES = {
+    'default': [
+        (1, curses.COLOR_GREEN, -1), (2, curses.COLOR_RED, -1),
+        (3, curses.COLOR_YELLOW, -1), (4, curses.COLOR_CYAN, -1),
+        (5, curses.COLOR_MAGENTA, -1), (6, curses.COLOR_BLUE, -1),
+        (7, curses.COLOR_WHITE, -1),
+    ],
+    'retro': [
+        (1, curses.COLOR_YELLOW, -1), (2, curses.COLOR_RED, -1),
+        (3, curses.COLOR_GREEN, -1), (4, curses.COLOR_WHITE, -1),
+        (5, curses.COLOR_RED, -1), (6, curses.COLOR_YELLOW, -1),
+        (7, curses.COLOR_GREEN, -1),
+    ],
+    'ocean': [
+        (1, curses.COLOR_CYAN, -1), (2, curses.COLOR_MAGENTA, -1),
+        (3, curses.COLOR_WHITE, -1), (4, curses.COLOR_BLUE, -1),
+        (5, curses.COLOR_CYAN, -1), (6, curses.COLOR_BLUE, -1),
+        (7, curses.COLOR_WHITE, -1),
+    ],
+}
+
+_current_theme = 'default'
+
+
+def _load_theme():
+    global _current_theme
+    try:
+        cfg = json.loads((CONFIG_DIR / 'config.json').read_text())
+        _current_theme = cfg.get('theme', 'default')
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
+
+def _save_theme(name):
+    global _current_theme
+    _current_theme = name
+    _ensure_config()
+    cfg_file = CONFIG_DIR / 'config.json'
+    try:
+        cfg = json.loads(cfg_file.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        cfg = {}
+    cfg['theme'] = name
+    cfg_file.write_text(json.dumps(cfg, indent=2))
+
 
 def init_colors():
     curses.start_color()
     curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_GREEN, -1)
-    curses.init_pair(2, curses.COLOR_RED, -1)
-    curses.init_pair(3, curses.COLOR_YELLOW, -1)
-    curses.init_pair(4, curses.COLOR_CYAN, -1)
-    curses.init_pair(5, curses.COLOR_MAGENTA, -1)
-    curses.init_pair(6, curses.COLOR_BLUE, -1)
-    curses.init_pair(7, curses.COLOR_WHITE, -1)
+    theme = _THEMES.get(_current_theme, _THEMES['default'])
+    for pair_id, fg, bg in theme:
+        curses.init_pair(pair_id, fg, bg)
     if curses.COLORS >= 8:
         curses.init_pair(8, curses.COLOR_WHITE, curses.COLOR_RED)
         curses.init_pair(9, curses.COLOR_WHITE, curses.COLOR_GREEN)
@@ -374,6 +421,7 @@ class Game:
             save_high_score(self.name, self.score)
             self.center_text(mid, '  NEW HIGH SCORE!  ',
                              curses.A_REVERSE | curses.A_BOLD)
+            curses.beep()
         else:
             self.center_text(mid, f'  High Score: {high}  ',
                              curses.color_pair(3))
@@ -1735,10 +1783,658 @@ class PongGame(Game):
                          curses.color_pair(4))
 
 
+# ─── Flappy Bird ────────────────────────────────────────────────────────────
+
+class FlappyGame(Game):
+    name = "flappy"
+    min_h = 20
+    min_w = 50
+
+    GRAVITY = 0.3
+    JUMP_VEL = -1.5
+    PIPE_GAP = 6
+    PIPE_WIDTH = 3
+    PIPE_INTERVAL = 35
+    BIRD_X = 10
+
+    def setup(self):
+        saved = self._load_save(self.name)
+        if saved:
+            self.bird_y = saved['bird_y']
+            self.bird_vel = saved['bird_vel']
+            self.pipes = saved['pipes']
+            self.score = saved['score']
+            self.frame = saved['frame']
+            self.speed = saved['speed']
+            self.pipe_timer = saved['pipe_timer']
+            return
+        self.bird_y = float(self.h // 2)
+        self.bird_vel = 0.0
+        self.pipes = []
+        self.score = 0
+        self.frame = 0
+        self.speed = 1.0
+        self.pipe_timer = self.PIPE_INTERVAL
+
+    def get_timeout(self):
+        return 50
+
+    def handle_input(self, key):
+        if key in (ord(' '), ord('w'), curses.KEY_UP):
+            self.bird_vel = self.JUMP_VEL
+
+    def update(self):
+        self.frame += 1
+        self.speed = 1.0 + self.score * 0.04
+
+        self.bird_vel += self.GRAVITY
+        self.bird_y += self.bird_vel
+
+        ground_y = self.h - 2
+        if self.bird_y < 1 or self.bird_y >= ground_y:
+            self.game_over = True
+            return
+
+        self.pipe_timer -= 1
+        if self.pipe_timer <= 0:
+            play_h = self.h - 3
+            gap_start = random.randint(3, play_h - self.PIPE_GAP - 2)
+            self.pipes.append({'x': float(self.w - 1), 'gap_top': gap_start,
+                               'scored': False})
+            self.pipe_timer = max(20, int(self.PIPE_INTERVAL / self.speed))
+
+        bird_row = int(self.bird_y)
+        for p in self.pipes:
+            p['x'] -= self.speed
+            px = int(p['x'])
+            gap_bot = p['gap_top'] + self.PIPE_GAP
+            if px <= self.BIRD_X < px + self.PIPE_WIDTH:
+                if bird_row < p['gap_top'] or bird_row >= gap_bot:
+                    self.game_over = True
+                    return
+            if not p['scored'] and p['x'] + self.PIPE_WIDTH < self.BIRD_X:
+                p['scored'] = True
+                self.score += 1
+
+        self.pipes = [p for p in self.pipes if p['x'] + self.PIPE_WIDTH > 0]
+
+    def draw(self):
+        ground_y = self.h - 2
+        hi = load_high_score(self.name)
+        self.safe_addstr(0, 2, 'FLAPPY BIRD', curses.A_BOLD)
+        sc_str = f'Score: {self.score}  HI: {max(self.score, hi)}'
+        self.safe_addstr(0, self.w - len(sc_str) - 2, sc_str,
+                         curses.color_pair(3) | curses.A_BOLD)
+
+        for p in self.pipes:
+            px = int(p['x'])
+            gap_top = p['gap_top']
+            gap_bot = gap_top + self.PIPE_GAP
+            for col in range(self.PIPE_WIDTH):
+                cx = px + col
+                if cx < 0 or cx >= self.w:
+                    continue
+                for row in range(1, gap_top):
+                    ch = '+' if col in (0, self.PIPE_WIDTH - 1) and row == gap_top - 1 else '|'
+                    self.safe_addstr(row, cx, ch,
+                                     curses.color_pair(1) | curses.A_BOLD)
+                for row in range(gap_bot, ground_y):
+                    ch = '+' if col in (0, self.PIPE_WIDTH - 1) and row == gap_bot else '|'
+                    self.safe_addstr(row, cx, ch,
+                                     curses.color_pair(1) | curses.A_BOLD)
+
+        self.safe_addstr(ground_y, 0, '─' * self.w, curses.color_pair(4))
+        bird_row = int(self.bird_y)
+        bird_ch = '>' if self.bird_vel <= 0 else 'v'
+        self.safe_addstr(bird_row, self.BIRD_X, bird_ch,
+                         curses.color_pair(3) | curses.A_BOLD)
+        self.safe_addstr(self.h - 1, 2,
+                         'W/Space: Flap  P: Pause  ?: Help  ESC: Quit',
+                         curses.color_pair(4))
+
+    def get_controls(self):
+        return [('W/Space', 'Flap'), ('P', 'Pause'), ('ESC', 'Quit')]
+
+    def get_stats(self):
+        return [('Speed', f'{self.speed:.1f}x')]
+
+    def get_save_data(self):
+        return {'bird_y': self.bird_y, 'bird_vel': self.bird_vel,
+                'pipes': self.pipes, 'score': self.score, 'frame': self.frame,
+                'speed': self.speed, 'pipe_timer': self.pipe_timer}
+
+
+# ─── Minesweeper (Interactive) ──────────────────────────────────────────────
+
+class MinesweeperGame(Game):
+    name = "minesweeper_i"
+    min_h = 22
+    min_w = 40
+    supports_difficulty = True
+
+    _NUM_COLORS = {1: 6, 2: 1, 3: 2, 4: 5, 5: 3, 6: 4, 7: 7, 8: 7}
+
+    def setup(self):
+        saved = self._load_save(self.name)
+        if saved:
+            self.rows = saved['rows']
+            self.cols = saved['cols']
+            self.num_mines = saved['mines']
+            self.grid = saved['grid']
+            self.revealed = saved['revealed']
+            self.flagged = saved['flagged']
+            self.cur_r = saved['cur_r']
+            self.cur_c = saved['cur_c']
+            self.score = saved['score']
+            self.frame = saved['frame']
+            self.first_reveal = saved['first_reveal']
+            return
+        cfg = {'easy': (9, 9, 10), 'medium': (16, 16, 40), 'hard': (16, 30, 99)}
+        self.rows, self.cols, self.num_mines = cfg.get(self.difficulty, (9, 9, 10))
+        self.cur_r = self.rows // 2
+        self.cur_c = self.cols // 2
+        self.score = 0
+        self.frame = 0
+        self.first_reveal = True
+        self.grid = [[0] * self.cols for _ in range(self.rows)]
+        self.revealed = [[False] * self.cols for _ in range(self.rows)]
+        self.flagged = [[False] * self.cols for _ in range(self.rows)]
+
+    def _place_mines(self, safe_r, safe_c):
+        forbidden = set()
+        for dr in range(-1, 2):
+            for dc in range(-1, 2):
+                nr, nc = safe_r + dr, safe_c + dc
+                if 0 <= nr < self.rows and 0 <= nc < self.cols:
+                    forbidden.add((nr, nc))
+        candidates = [(r, c) for r in range(self.rows) for c in range(self.cols)
+                      if (r, c) not in forbidden]
+        mines = random.sample(candidates, min(self.num_mines, len(candidates)))
+        for r, c in mines:
+            self.grid[r][c] = -1
+        for r in range(self.rows):
+            for c in range(self.cols):
+                if self.grid[r][c] == -1:
+                    continue
+                self.grid[r][c] = sum(
+                    1 for dr in range(-1, 2) for dc in range(-1, 2)
+                    if (dr or dc) and 0 <= r + dr < self.rows
+                    and 0 <= c + dc < self.cols and self.grid[r + dr][c + dc] == -1)
+
+    def _flood_reveal(self, r, c):
+        stack = [(r, c)]
+        while stack:
+            cr, cc = stack.pop()
+            if cr < 0 or cr >= self.rows or cc < 0 or cc >= self.cols:
+                continue
+            if self.revealed[cr][cc] or self.flagged[cr][cc]:
+                continue
+            self.revealed[cr][cc] = True
+            if self.grid[cr][cc] == -1:
+                continue
+            self.score += 1
+            if self.grid[cr][cc] == 0:
+                for dr in range(-1, 2):
+                    for dc in range(-1, 2):
+                        if dr or dc:
+                            stack.append((cr + dr, cc + dc))
+
+    def _reveal_cell(self, r, c):
+        if self.revealed[r][c] or self.flagged[r][c]:
+            return
+        if self.first_reveal:
+            self.first_reveal = False
+            self._place_mines(r, c)
+        if self.grid[r][c] == -1:
+            self.revealed[r][c] = True
+            self.game_over = True
+            return
+        self._flood_reveal(r, c)
+        unrevealed_safe = sum(
+            1 for rr in range(self.rows) for cc in range(self.cols)
+            if not self.revealed[rr][cc] and self.grid[rr][cc] != -1)
+        if unrevealed_safe == 0:
+            self.won = True
+            self.game_over = True
+
+    def get_timeout(self):
+        return 200
+
+    def handle_input(self, key):
+        if key in (curses.KEY_UP, ord('w')):
+            self.cur_r = max(0, self.cur_r - 1)
+        elif key in (curses.KEY_DOWN, ord('s')):
+            self.cur_r = min(self.rows - 1, self.cur_r + 1)
+        elif key in (curses.KEY_LEFT, ord('a')):
+            self.cur_c = max(0, self.cur_c - 1)
+        elif key in (curses.KEY_RIGHT, ord('d')):
+            self.cur_c = min(self.cols - 1, self.cur_c + 1)
+        elif key == ord(' '):
+            self._reveal_cell(self.cur_r, self.cur_c)
+        elif key in (ord('f'), ord('F')):
+            if not self.revealed[self.cur_r][self.cur_c]:
+                self.flagged[self.cur_r][self.cur_c] = \
+                    not self.flagged[self.cur_r][self.cur_c]
+
+    def update(self):
+        if not self.game_over:
+            self.frame += 1
+
+    def draw(self):
+        show_mines = self.game_over
+        cell_w = 2
+        grid_w = self.cols * cell_w
+        sx = max(1, (self.w - grid_w) // 2)
+        sy = max(2, (self.h - self.rows - 4) // 2)
+
+        flags = sum(self.flagged[r][c]
+                    for r in range(self.rows) for c in range(self.cols))
+        elapsed = self.frame // 5
+        header = f' MINESWEEPER  Mines:{self.num_mines - flags}  Time:{elapsed}s '
+        self.safe_addstr(sy - 2, max(0, (self.w - len(header)) // 2),
+                         header, curses.A_BOLD)
+        diff_label = f'[{self.difficulty.upper()} {self.rows}x{self.cols}]'
+        self.safe_addstr(sy - 1, max(0, (self.w - len(diff_label)) // 2),
+                         diff_label, curses.color_pair(4))
+
+        for r in range(self.rows):
+            for c in range(self.cols):
+                is_cursor = (r == self.cur_r and c == self.cur_c)
+                rev = curses.A_REVERSE if is_cursor else 0
+                if self.flagged[r][c] and not self.revealed[r][c]:
+                    ch, attr = 'F', curses.color_pair(2) | curses.A_BOLD | rev
+                elif not self.revealed[r][c]:
+                    if show_mines and self.grid[r][c] == -1:
+                        ch, attr = '*', curses.color_pair(2) | curses.A_BOLD | rev
+                    else:
+                        ch, attr = '#', curses.color_pair(7) | rev
+                else:
+                    v = self.grid[r][c]
+                    if v == -1:
+                        ch, attr = '*', curses.color_pair(2) | curses.A_BOLD | rev
+                    elif v == 0:
+                        ch, attr = '.', curses.color_pair(7) | rev
+                    else:
+                        pair = self._NUM_COLORS.get(v, 7)
+                        ch, attr = str(v), curses.color_pair(pair) | curses.A_BOLD | rev
+                self.safe_addstr(sy + r, sx + c * cell_w, ch, attr)
+
+        hint = 'WASD:Move  Space:Reveal  F:Flag  ?:Help  ESC:Quit'
+        self.safe_addstr(sy + self.rows + 1,
+                         max(0, (self.w - len(hint)) // 2),
+                         hint, curses.color_pair(4))
+
+    def get_controls(self):
+        return [('WASD/Arrows', 'Move cursor'), ('Space', 'Reveal cell'),
+                ('F', 'Toggle flag'), ('P', 'Pause'), ('ESC', 'Quit / save')]
+
+    def get_stats(self):
+        elapsed = self.frame // 5
+        flags = sum(self.flagged[r][c]
+                    for r in range(self.rows) for c in range(self.cols))
+        return [('Time', f'{elapsed}s'), ('Flags', f'{flags}/{self.num_mines}'),
+                ('Cells', self.score)]
+
+    def get_save_data(self):
+        return {'rows': self.rows, 'cols': self.cols, 'mines': self.num_mines,
+                'grid': self.grid, 'revealed': self.revealed,
+                'flagged': self.flagged, 'cur_r': self.cur_r, 'cur_c': self.cur_c,
+                'score': self.score, 'frame': self.frame,
+                'first_reveal': self.first_reveal}
+
+
+# ─── Pac-Man ────────────────────────────────────────────────────────────────
+
+class PacManGame(Game):
+    name = "pacman"
+    min_h = 24
+    min_w = 30
+
+    _MAZE = [
+        "###########################",
+        "#............#............#",
+        "#.####.#####.#.#####.####.#",
+        "#O####.#####.#.#####.####O#",
+        "#.........................#",
+        "#.####.##.#######.##.####.#",
+        "#......##....#....##......#",
+        "######.#####   #####.######",
+        "     #.#           #.#     ",
+        "######.# ###-### #.######  ",
+        "      .  #       #  .      ",
+        "######.# ######### #.######",
+        "     #.#           #.#     ",
+        "######.# ######### #.######",
+        "#............#............#",
+        "#.####.#####.#.#####.####.#",
+        "#O..##.......C.......##..O#",
+        "###.##.##.#######.##.##.###",
+        "#......##....#....##......#",
+        "#.##########.#.##########.#",
+        "#.........................#",
+        "###########################",
+    ]
+
+    _GHOST_CONFIGS = [
+        ('Blinky', 2, 'chase'),
+        ('Pinky', 5, 'ahead'),
+        ('Inky', 4, 'random'),
+        ('Clyde', 3, 'clyde'),
+    ]
+
+    def setup(self):
+        saved = self._load_save(self.name)
+        if saved:
+            self.maze = saved['maze']
+            self.score = saved['score']
+            self.lives = saved['lives']
+            self.pac_y = saved['pac_y']
+            self.pac_x = saved['pac_x']
+            self.pac_dir = tuple(saved['pac_dir'])
+            self.next_dir = tuple(saved['next_dir'])
+            self.ghosts = [dict(g) for g in saved['ghosts']]
+            for g in self.ghosts:
+                g['dir'] = tuple(g['dir'])
+            self.frightened = saved['frightened']
+            self.frightened_timer = saved['frightened_timer']
+            self.frame = saved['frame']
+            self.ghost_speed = saved['ghost_speed']
+            self.dots_left = saved['dots_left']
+            self._dying = saved.get('dying', 0)
+            return
+
+        self.maze = [list(row) for row in self._MAZE]
+        self.score = 0
+        self.lives = 3
+        self._dying = 0
+        self.frame = 0
+        self.ghost_speed = 3
+        self.frightened = False
+        self.frightened_timer = 0
+        self.dots_left = sum(1 for row in self.maze for c in row if c in ('.', 'O'))
+
+        self.pac_y, self.pac_x = 16, 13
+        for ry, row in enumerate(self.maze):
+            for rx, ch in enumerate(row):
+                if ch == 'C':
+                    self.pac_y, self.pac_x = ry, rx
+                    self.maze[ry][rx] = ' '
+        self.pac_dir = (0, 0)
+        self.next_dir = (0, 1)
+
+        home_y, home_x = 10, 13
+        self.ghosts = []
+        offsets = [(0, 0), (0, -1), (0, 1), (0, 2)]
+        for i, (gname, cpair, behavior) in enumerate(self._GHOST_CONFIGS):
+            oy, ox = offsets[i]
+            self.ghosts.append({'y': home_y + oy, 'x': home_x + ox,
+                                'dir': (0, 1), 'color': cpair,
+                                'behavior': behavior, 'name': gname,
+                                'eaten': False})
+
+    def _maze_rows(self):
+        return len(self.maze)
+
+    def _maze_cols(self):
+        return len(self.maze[0]) if self.maze else 0
+
+    def _is_wall(self, y, x):
+        if y < 0 or y >= self._maze_rows() or x < 0 or x >= self._maze_cols():
+            return True
+        return self.maze[y][x] == '#'
+
+    def _is_ghost_door(self, y, x):
+        if y < 0 or y >= self._maze_rows() or x < 0 or x >= self._maze_cols():
+            return False
+        return self.maze[y][x] == '-'
+
+    def _wrap_x(self, x):
+        return x % self._maze_cols()
+
+    def _try_move_pac(self, dy, dx):
+        ny = self.pac_y + dy
+        nx = self._wrap_x(self.pac_x + dx)
+        if not self._is_wall(ny, nx) and not self._is_ghost_door(ny, nx):
+            return ny, nx
+        return None
+
+    def get_timeout(self):
+        return 80
+
+    def handle_input(self, key):
+        if key in (curses.KEY_UP, ord('w')):
+            self.next_dir = (-1, 0)
+        elif key in (curses.KEY_DOWN, ord('s')):
+            self.next_dir = (1, 0)
+        elif key in (curses.KEY_LEFT, ord('a')):
+            self.next_dir = (0, -1)
+        elif key in (curses.KEY_RIGHT, ord('d')):
+            self.next_dir = (0, 1)
+
+    def _move_ghost(self, ghost):
+        gy, gx = ghost['y'], ghost['x']
+        gdir = ghost['dir']
+        reverse = (-gdir[0], -gdir[1])
+
+        if ghost['eaten']:
+            ty, tx = 10, 13
+        elif self.frightened:
+            dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            random.shuffle(dirs)
+            for d in dirs:
+                if d == reverse:
+                    continue
+                ny, nx = gy + d[0], self._wrap_x(gx + d[1])
+                if not self._is_wall(ny, nx) and not self._is_ghost_door(ny, nx):
+                    ghost['dir'] = d
+                    ghost['y'], ghost['x'] = ny, nx
+                    return
+            ny, nx = gy + reverse[0], self._wrap_x(gx + reverse[1])
+            if not self._is_wall(ny, nx):
+                ghost['dir'] = reverse
+                ghost['y'], ghost['x'] = ny, nx
+            return
+        else:
+            b = ghost['behavior']
+            if b == 'chase':
+                ty, tx = self.pac_y, self.pac_x
+            elif b == 'ahead':
+                ty = self.pac_y + self.pac_dir[0] * 4
+                tx = self.pac_x + self.pac_dir[1] * 4
+            elif b == 'clyde':
+                dist = abs(gy - self.pac_y) + abs(gx - self.pac_x)
+                if dist > 8:
+                    ty, tx = self.pac_y, self.pac_x
+                else:
+                    ty, tx = self._maze_rows() - 2, 1
+            else:  # random (Inky)
+                dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                random.shuffle(dirs)
+                for d in dirs:
+                    if d == reverse:
+                        continue
+                    ny, nx = gy + d[0], self._wrap_x(gx + d[1])
+                    if not self._is_wall(ny, nx) and not self._is_ghost_door(ny, nx):
+                        ghost['dir'] = d
+                        ghost['y'], ghost['x'] = ny, nx
+                        return
+                return
+
+        best_dir, best_dist = None, 999999
+        for d in [(-1, 0), (0, 1), (1, 0), (0, -1)]:
+            if d == reverse and not ghost['eaten']:
+                continue
+            ny, nx = gy + d[0], self._wrap_x(gx + d[1])
+            if self._is_wall(ny, nx):
+                continue
+            if not ghost['eaten'] and self._is_ghost_door(ny, nx):
+                continue
+            dist = abs(ny - ty) + abs(nx - tx)
+            if dist < best_dist:
+                best_dist = dist
+                best_dir = d
+
+        if best_dir:
+            ghost['dir'] = best_dir
+            ghost['y'] += best_dir[0]
+            ghost['x'] = self._wrap_x(ghost['x'] + best_dir[1])
+            if ghost['eaten'] and ghost['y'] == 10 and ghost['x'] == 13:
+                ghost['eaten'] = False
+
+    def _reset_positions(self):
+        self.pac_y, self.pac_x = 16, 13
+        self.pac_dir = (0, 0)
+        self.next_dir = (0, 1)
+        self.frightened = False
+        self.frightened_timer = 0
+        home_y, home_x = 10, 13
+        offsets = [(0, 0), (0, -1), (0, 1), (0, 2)]
+        for i, ghost in enumerate(self.ghosts):
+            oy, ox = offsets[i]
+            ghost['y'] = home_y + oy
+            ghost['x'] = home_x + ox
+            ghost['dir'] = (0, 1)
+            ghost['eaten'] = False
+
+    def update(self):
+        if self._dying > 0:
+            self._dying -= 1
+            if self._dying == 0:
+                self.lives -= 1
+                if self.lives <= 0:
+                    self.game_over = True
+                else:
+                    self._reset_positions()
+            return
+
+        self.frame += 1
+
+        moved = False
+        pos = self._try_move_pac(*self.next_dir)
+        if pos:
+            self.pac_dir = self.next_dir
+            self.pac_y, self.pac_x = pos
+            moved = True
+        else:
+            pos = self._try_move_pac(*self.pac_dir)
+            if pos:
+                self.pac_y, self.pac_x = pos
+                moved = True
+
+        if moved:
+            cell = self.maze[self.pac_y][self.pac_x]
+            if cell == '.':
+                self.maze[self.pac_y][self.pac_x] = ' '
+                self.score += 10
+                self.dots_left -= 1
+            elif cell == 'O':
+                self.maze[self.pac_y][self.pac_x] = ' '
+                self.score += 50
+                self.dots_left -= 1
+                self.frightened = True
+                self.frightened_timer = 30
+                for ghost in self.ghosts:
+                    if not ghost['eaten']:
+                        ghost['dir'] = (-ghost['dir'][0], -ghost['dir'][1])
+
+        if self.dots_left <= 0:
+            self.game_over = True
+            self.won = True
+            return
+
+        if self.frightened:
+            if moved:
+                self.frightened_timer -= 1
+            if self.frightened_timer <= 0:
+                self.frightened = False
+
+        if self.frame % self.ghost_speed == 0:
+            for ghost in self.ghosts:
+                self._move_ghost(ghost)
+
+        if self.frame % 150 == 0 and self.ghost_speed > 1:
+            self.ghost_speed = max(1, self.ghost_speed - 1)
+
+        for ghost in self.ghosts:
+            if ghost['eaten']:
+                continue
+            if ghost['y'] == self.pac_y and ghost['x'] == self.pac_x:
+                if self.frightened:
+                    ghost['eaten'] = True
+                    self.score += 200
+                else:
+                    self._dying = 20
+                    return
+
+    def draw(self):
+        maze_rows = self._maze_rows()
+        maze_cols = self._maze_cols()
+        off_y = max(1, (self.h - maze_rows - 3) // 2)
+        off_x = max(0, (self.w - maze_cols) // 2)
+
+        hi = load_high_score(self.name)
+        header = f' PAC-MAN  Score:{self.score}  Hi:{hi}  Lives:{"C" * self.lives} '
+        self.safe_addstr(off_y - 1, max(0, (self.w - len(header)) // 2),
+                         header, curses.A_BOLD | curses.color_pair(3))
+
+        for ry, row in enumerate(self.maze):
+            for rx, ch in enumerate(row):
+                sy, sx_pos = off_y + ry, off_x + rx
+                if ch == '#':
+                    self.safe_addstr(sy, sx_pos, '#',
+                                     curses.color_pair(6) | curses.A_BOLD)
+                elif ch == '.':
+                    self.safe_addstr(sy, sx_pos, '.', curses.color_pair(7))
+                elif ch == 'O':
+                    self.safe_addstr(sy, sx_pos, 'O',
+                                     curses.color_pair(3) | curses.A_BOLD)
+                elif ch == '-':
+                    self.safe_addstr(sy, sx_pos, '-', curses.color_pair(5))
+
+        if self._dying == 0 or (self._dying % 4 < 2):
+            self.safe_addstr(off_y + self.pac_y, off_x + self.pac_x, 'C',
+                             curses.color_pair(3) | curses.A_BOLD)
+
+        for ghost in self.ghosts:
+            gy, gx = off_y + ghost['y'], off_x + ghost['x']
+            if ghost['eaten']:
+                ch, attr = 'x', curses.color_pair(7)
+            elif self.frightened:
+                blink = self.frightened_timer <= 8 and self.frame % 4 >= 2
+                attr = curses.color_pair(7 if blink else 6) | curses.A_BOLD
+                ch = 'M'
+            else:
+                ch, attr = 'M', curses.color_pair(ghost['color']) | curses.A_BOLD
+            self.safe_addstr(gy, gx, ch, attr)
+
+        self.safe_addstr(off_y + maze_rows, max(0, (self.w - 44) // 2),
+                         'WASD/Arrows:Move  P:Pause  ?:Help  ESC:Quit',
+                         curses.color_pair(4))
+
+    def get_controls(self):
+        return [('WASD/Arrows', 'Move Pac-Man'), ('P', 'Pause'), ('ESC', 'Quit')]
+
+    def get_stats(self):
+        total = sum(1 for row in self._MAZE for c in row if c in ('.', 'O'))
+        return [('Lives left', self.lives),
+                ('Dots eaten', total - self.dots_left)]
+
+    def get_save_data(self):
+        return {'maze': [list(row) for row in self.maze], 'score': self.score,
+                'lives': self.lives, 'pac_y': self.pac_y, 'pac_x': self.pac_x,
+                'pac_dir': list(self.pac_dir), 'next_dir': list(self.next_dir),
+                'ghosts': [{**g, 'dir': list(g['dir'])} for g in self.ghosts],
+                'frightened': self.frightened,
+                'frightened_timer': self.frightened_timer,
+                'frame': self.frame, 'ghost_speed': self.ghost_speed,
+                'dots_left': self.dots_left, 'dying': self._dying}
+
+
 # ─── Menu ────────────────────────────────────────────────────────────────────
 
 _ICONS = {'snake': '~o~', 'tetris': '[#]', '2048': ' 2K', 'dino': '/^\\',
-          'breakout': '[=]', 'shooter': '/A\\', 'pong': '|O|'}
+          'breakout': '[=]', 'shooter': '/A\\', 'pong': '|O|',
+          'flappy': '>>=', 'minesweeper_i': '[*]', 'pacman': 'C.M'}
 
 _GAMES = [
     ("Snake",         "Classic snake - eat food, grow longer",     SnakeGame),
@@ -1748,6 +2444,9 @@ _GAMES = [
     ("Breakout",      "Break all the bricks with a bouncing ball", BreakoutGame),
     ("Space Shooter", "Blast enemies, defeat bosses",              ShooterGame),
     ("Pong",          "Classic paddle game vs AI",                 PongGame),
+    ("Flappy Bird",   "Flap through pipes, don't crash",          FlappyGame),
+    ("Minesweeper",   "Uncover cells, avoid mines",               MinesweeperGame),
+    ("Pac-Man",       "Eat dots, avoid ghosts",                   PacManGame),
 ]
 
 _TITLE = [
@@ -1759,7 +2458,10 @@ _TITLE = [
 _GAME_MAP = {g[0].lower().replace(' ', ''): g[2] for g in _GAMES}
 _GAME_MAP.update({'dino': DinoGame, '2048': Game2048,
                   'shooter': ShooterGame, 'space': ShooterGame,
-                  'pong': PongGame})
+                  'pong': PongGame, 'flappy': FlappyGame,
+                  'bird': FlappyGame, 'mines': MinesweeperGame,
+                  'sweep': MinesweeperGame, 'pacman': PacManGame,
+                  'pac': PacManGame})
 
 
 def _safe(stdscr, y, x, text, attr=0):
@@ -1789,15 +2491,16 @@ def _run_game(stdscr, cls):
 
 def _menu(stdscr):
     curses.curs_set(0)
+    _load_theme()
     init_colors()
     sel = 0
     stdscr.clear()
     while True:
         stdscr.erase()
         h, w = stdscr.getmaxyx()
-        if h < 22 or w < 44:
+        if h < 28 or w < 44:
             _safe(stdscr, h // 2, max(0, (w - 30) // 2),
-                  f'Need 44x22 terminal ({w}x{h})', curses.A_BOLD)
+                  f'Need 44x28 terminal ({w}x{h})', curses.A_BOLD)
             stdscr.noutrefresh()
             curses.doupdate()
             stdscr.getch()
@@ -1838,9 +2541,12 @@ def _menu(stdscr):
             _safe(stdscr, y + 1, bx + 7, desc[:38], curses.color_pair(4))
 
         cy = min(h - 2, ly + len(_GAMES) * 2 + 1)
-        ctrl = "Up/Down: Select   Enter: Play   ?: Help   Q: Quit"
+        ctrl = "Up/Down: Select  Enter: Play  T: Theme  ?: Help  Q: Quit"
         _safe(stdscr, cy, max(0, (w - len(ctrl)) // 2), ctrl,
               curses.color_pair(7))
+        theme_label = f'Theme: {_current_theme}'
+        _safe(stdscr, cy + 1, max(0, (w - len(theme_label)) // 2),
+              theme_label, curses.color_pair(4))
         stdscr.noutrefresh()
         curses.doupdate()
 
@@ -1851,6 +2557,11 @@ def _menu(stdscr):
             sel = (sel + 1) % len(_GAMES)
         elif key in (curses.KEY_ENTER, 10, 13):
             _run_game(stdscr, _GAMES[sel][2])
+        elif key in (ord('t'), ord('T')):
+            names = list(_THEMES.keys())
+            idx = names.index(_current_theme) if _current_theme in names else 0
+            _save_theme(names[(idx + 1) % len(names)])
+            init_colors()
         elif key in (ord('q'), 27):
             break
 
@@ -2143,12 +2854,152 @@ def _cli_ms_render(s):
     return '\n'.join(lines)
 
 
+# ─── CLI: Connect4 ───────────────────────────────────────────────────────────
+
+def _cli_c4_init():
+    return {
+        'game': 'connect4',
+        'board': [[0] * 7 for _ in range(6)],
+        'score': 0,
+        'over': False,
+        'won': False,
+        'turn': 1,
+        'last_col': None,
+    }
+
+
+def _cli_c4_check_win(board, player):
+    rows, cols = 6, 7
+    # Horizontal
+    for r in range(rows):
+        for c in range(cols - 3):
+            if all(board[r][c + i] == player for i in range(4)):
+                return True
+    # Vertical
+    for r in range(rows - 3):
+        for c in range(cols):
+            if all(board[r + i][c] == player for i in range(4)):
+                return True
+    # Diagonal down-right
+    for r in range(rows - 3):
+        for c in range(cols - 3):
+            if all(board[r + i][c + i] == player for i in range(4)):
+                return True
+    # Diagonal down-left
+    for r in range(rows - 3):
+        for c in range(3, cols):
+            if all(board[r + i][c - i] == player for i in range(4)):
+                return True
+    return False
+
+
+def _cli_c4_drop(board, col, player):
+    """Drop piece into col (0-indexed). Returns row placed, or -1 if full."""
+    for r in range(5, -1, -1):
+        if board[r][col] == 0:
+            board[r][col] = player
+            return r
+    return -1
+
+
+def _cli_c4_is_full(board):
+    return all(board[0][c] != 0 for c in range(7))
+
+
+def _cli_c4_ai_move(board):
+    """Return best column (0-indexed) for AI."""
+    # Check AI winning move
+    for c in range(7):
+        if board[0][c] == 0:
+            test = [row[:] for row in board]
+            _cli_c4_drop(test, c, 2)
+            if _cli_c4_check_win(test, 2):
+                return c
+    # Block player winning move
+    for c in range(7):
+        if board[0][c] == 0:
+            test = [row[:] for row in board]
+            _cli_c4_drop(test, c, 1)
+            if _cli_c4_check_win(test, 1):
+                return c
+    # Prefer center columns: 3, 2, 4, 1, 5, 0, 6
+    for c in (3, 2, 4, 1, 5, 0, 6):
+        if board[0][c] == 0:
+            return c
+    return -1
+
+
+def _cli_c4_move(s, action):
+    if s.get('over'):
+        return s
+    action = action.strip()
+    try:
+        col = int(action) - 1
+    except ValueError:
+        return s
+    if col < 0 or col > 6:
+        return s
+    if s['board'][0][col] != 0:
+        return s
+
+    # Player move
+    _cli_c4_drop(s['board'], col, 1)
+    s['last_col'] = col
+    if _cli_c4_check_win(s['board'], 1):
+        s['over'] = True
+        s['won'] = True
+        s['score'] = 1
+        return s
+    if _cli_c4_is_full(s['board']):
+        s['over'] = True
+        return s
+
+    # AI move
+    ai_col = _cli_c4_ai_move(s['board'])
+    if ai_col >= 0:
+        _cli_c4_drop(s['board'], ai_col, 2)
+        s['last_col'] = ai_col
+        if _cli_c4_check_win(s['board'], 2):
+            s['over'] = True
+            s['won'] = False
+            s['score'] = 0
+            return s
+        if _cli_c4_is_full(s['board']):
+            s['over'] = True
+    return s
+
+
+def _cli_c4_render(s):
+    lines = [f"CONNECT 4   Score: {s['score']}"]
+    lines.append('  1 2 3 4 5 6 7')
+    lines.append(' ┌─────────────┐')
+    glyphs = {0: '.', 1: 'X', 2: 'O'}
+    for r in range(6):
+        row = ' │'
+        for c in range(7):
+            row += glyphs[s['board'][r][c]] + ' '
+        row = row.rstrip(' ') + '│'
+        lines.append(row)
+    lines.append(' └─────────────┘')
+    if s['won']:
+        lines.append('You win!')
+    elif s.get('over'):
+        if not s['won'] and _cli_c4_is_full(s['board']) and not _cli_c4_check_win(s['board'], 2):
+            lines.append("It's a draw!")
+        else:
+            lines.append('AI wins!')
+    else:
+        lines.append('Your turn (1-7):')
+    return '\n'.join(lines)
+
+
 # ─── CLI Dispatcher ──────────────────────────────────────────────────────────
 
 _CLI_GAMES = {
     'snake': (_cli_snake_init, _cli_snake_move, _cli_snake_render),
     '2048': (_cli_2048_init, _cli_2048_move, _cli_2048_render),
     'minesweeper': (_cli_ms_init, _cli_ms_move, _cli_ms_render),
+    'connect4': (_cli_c4_init, _cli_c4_move, _cli_c4_render),
 }
 
 
@@ -2166,7 +3017,7 @@ def _save_game_state(state):
 
 def _cli_render(state):
     renderers = {'snake': _cli_snake_render, '2048': _cli_2048_render,
-                 'minesweeper': _cli_ms_render}
+                 'minesweeper': _cli_ms_render, 'connect4': _cli_c4_render}
     return renderers.get(state['game'], lambda s: 'Unknown game')(state)
 
 
@@ -2181,6 +3032,7 @@ def _cli_mode(args):
             print('  snake        Classic snake, turn by turn')
             print('  2048         Slide and merge number tiles')
             print('  minesweeper  Uncover cells, avoid mines')
+            print('  connect4     Drop pieces, get four in a row')
             print()
             print('Start a game:  play cli start <game>')
             print('Interactive:   ! play  (full-screen curses games)')
@@ -2192,9 +3044,11 @@ def _cli_mode(args):
         name = args[1].lower() if len(args) > 1 else ''
         if name in ('ms', 'mines'):
             name = 'minesweeper'
+        if name in ('c4',):
+            name = 'connect4'
         if name not in _CLI_GAMES:
             print(f'Unknown game: {name}')
-            print('Available: snake, 2048, minesweeper')
+            print('Available: snake, 2048, minesweeper, connect4')
             return
         init_fn = _CLI_GAMES[name][0]
         state = init_fn()
@@ -2247,9 +3101,24 @@ def _cli_mode(args):
             save_high_score(state['game'], state.get('score', 0))
         print(_cli_render(state))
 
+    elif cmd.isdigit():
+        # Connect4 column move
+        state = _load_game_state()
+        if not state or state.get('game') != 'connect4':
+            print('No active connect4 game.')
+            return
+        if state.get('over'):
+            print(_cli_render(state))
+            return
+        state = _cli_c4_move(state, cmd)
+        _save_game_state(state)
+        if state.get('over'):
+            save_high_score(state['game'], state.get('score', 0))
+        print(_cli_render(state))
+
     else:
         print(f'Unknown: {cmd}')
-        print('Commands: start <game> | up/down/left/right | reveal/flag <r> <c> | show | quit')
+        print('Commands: start <game> | up/down/left/right | 1-7 (connect4) | reveal/flag <r> <c> | show | quit')
 
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
@@ -2271,6 +3140,13 @@ def main():
         state = _load_game_state()
         if state and not state.get('over'):
             _cli_mode([_shortcuts[cmd]])
+            return
+
+    # Connect4 column shortcut: play 3 (drops in column 3)
+    if cmd.isdigit():
+        state = _load_game_state()
+        if state and state.get('game') == 'connect4' and not state.get('over'):
+            _cli_mode([cmd])
             return
 
     # Direct game commands: play reveal/flag/show/quit/new

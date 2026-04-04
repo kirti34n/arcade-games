@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  7 classic games in your terminal. Zero dependencies. Just <code>play</code>.
+  10 classic games in your terminal. Zero dependencies. Just <code>play</code>.
 </p>
 
 ---
@@ -45,6 +45,9 @@ pip install .
 | **Breakout** | `play breakout` | Smash bricks with a bouncing ball |
 | **Space Shooter** | `play shooter` | Blast enemies, defeat bosses |
 | **Pong** | `play pong` | Classic paddle game vs AI |
+| **Flappy Bird** | `play flappy` | Flap through pipes, don't crash |
+| **Minesweeper** | `play mines` | Uncover cells, avoid mines |
+| **Pac-Man** | `play pacman` | Eat dots, avoid ghosts |
 
 ## Quick Start
 
@@ -64,6 +67,8 @@ play list         # See all games + high scores
  P                   Pause
  ESC / Q             Quit (auto-saves progress)
  ?/H                 Show controls help
+ F                   Flag (Minesweeper)
+ T                   Cycle color theme (menu)
  R                   Retry after game over
 ```
 
@@ -75,6 +80,8 @@ play list         # See all games + high scores
 - **Single file** — Entire codebase is one `play.py`
 - **Difficulty selection** — Choose Easy/Medium/Hard for Shooter and Pong
 - **In-game help** — Press `?` during any game to see controls
+- **Color themes** — Cycle themes with T in the menu (default, retro, ocean)
+- **Sound effects** — Terminal beep on new high scores
 - **Adaptive difficulty** — Snake speeds up as you score, Tetris levels up
 - **Ghost piece** — Tetris shows where your piece will land
 - **Works everywhere** — Linux, macOS, WSL2
@@ -94,6 +101,7 @@ Works as a slash command inside [Claude Code](https://claude.ai/claude-code) —
 play cli start snake       # Start a CLI game
 play cli start 2048        # Start 2048
 play cli start minesweeper # Start Minesweeper
+play cli start connect4    # Start Connect4
 play w                     # Move up (WASD shortcuts)
 play show                  # Show current board
 play quit                  # End game
@@ -110,11 +118,15 @@ play.py (single file)
 │   ├── Dino Runner
 │   ├── Breakout
 │   ├── Space Shooter
-│   └── Pong
+│   ├── Pong
+│   ├── Flappy Bird
+│   ├── Minesweeper
+│   └── Pac-Man
 ├── CLI Games (turn-based)         # Text output, no curses needed
 │   ├── Snake
 │   ├── 2048
-│   └── Minesweeper
+│   ├── Minesweeper
+│   └── Connect4
 ├── Game Menu                      # Arrow keys to select
 ├── Save/Resume System             # JSON state files
 └── Smart Terminal Detection       # Opens new window if no TTY
