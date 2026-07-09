@@ -43,7 +43,7 @@ Linux/macOS; on Windows `pip install terminal-games` also pulls in windows-curse
 The turn-based `play cli ...` games and text commands work with no curses at all.
 """
 
-__version__ = '2.6.1'
+__version__ = '2.6.2'
 
 try:
     import curses
@@ -433,8 +433,17 @@ class Game:
             self.setup()
         self.h, self.w = self.stdscr.getmaxyx()
 
-        timeout = self.get_timeout()
-        self.stdscr.timeout(timeout)
+        # Real-time games advance on a wall-clock cadence, decoupled from input:
+        # curses getch() returns early on any buffered key, so calling update()
+        # once per getch would let holding/mashing a key add extra ticks (the
+        # snake "accelerates"). Instead we poll input often but only step the
+        # simulation when the tick deadline is reached. Turn-based games
+        # (get_timeout() == -1) block on getch and step once per key.
+        realtime = self.get_timeout() > 0
+        POLL_MS = 20
+        self.stdscr.timeout(POLL_MS if realtime else -1)
+        interval = (self.get_timeout() / 1000.0) if realtime else 0.0
+        next_tick = time.monotonic() + interval
 
         first = True
         while True:
@@ -454,11 +463,7 @@ class Game:
             elif key != -1 and self._show_help:
                 self._show_help = False  # any other key closes help
 
-            # Update timeout if it changed (e.g. snake speeds up)
-            new_timeout = self.get_timeout()
-            if new_timeout != timeout:
-                timeout = new_timeout
-                self.stdscr.timeout(timeout)
+            active = not self.paused and not self._show_help and not self.game_over
 
             self.stdscr.erase()
             # Size gate runs BEFORE advancing state, so a shrunk terminal pauses
@@ -470,13 +475,28 @@ class Game:
                                  f'Need at least {self.min_w}x{self.min_h}')
                 self.stdscr.noutrefresh()
                 curses.doupdate()
+                next_tick = time.monotonic() + interval  # don't bank paused time
                 continue
 
-            active = not self.paused and not self._show_help and not self.game_over
-            if active:
-                if key != -1:
-                    self.handle_input(key)
-                self.update()
+            # Steering/actions register immediately on the keypress (crisp), but
+            # they never directly advance the simulation.
+            if active and key != -1:
+                self.handle_input(key)
+
+            if realtime:
+                interval = max(0.01, self.get_timeout() / 1000.0)  # e.g. snake ramp
+                now = time.monotonic()
+                steps = 0
+                while active and now >= next_tick and steps < 3:
+                    self.update()
+                    next_tick += interval
+                    steps += 1
+                    if self.game_over:
+                        break
+                if next_tick < now - interval:  # big stall: resync, no burst
+                    next_tick = now + interval
+            elif active and key != -1:
+                self.update()  # turn-based: exactly one step per keypress
 
             self.draw()
             if self.game_over and not self._show_help:
@@ -582,8 +602,9 @@ class SnakeGame(Game):
             self.food = random.choice(empty)
 
     def get_timeout(self):
-        # Gentle ramp with a comfortable floor (was 80ms, which felt frantic).
-        return max(95, 180 - self.score * 2)
+        # Per-move delay. With the fixed-timestep loop this is the true cadence
+        # (~1000/ms moves/sec); floor 110ms => a comfortable ~9 moves/sec top.
+        return max(110, 180 - self.score * 2)
 
     def handle_input(self, key):
         dy, dx = self.direction

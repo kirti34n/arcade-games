@@ -406,6 +406,52 @@ def test_menu_scroll_reaches_last_game():
     assert any('Frogger' in t for t in drawn), 'last game never rendered'
 
 
+def test_snake_speed_is_input_independent():
+    """Steering or mashing keys must NOT move the snake faster than its timed
+    cadence (regression for the input-driven acceleration bug)."""
+    class Clock:
+        def __init__(self):
+            self.t = 1000.0
+        def time(self):
+            return self.t
+        def monotonic(self):
+            return self.t
+
+    clock = Clock()
+
+    class ClockScreen(MockScreen):
+        def __init__(self, keys, dt):
+            super().__init__(40, 110)
+            self._keys = list(keys)
+            self._i = 0
+            self._dt = dt
+        def getch(self):
+            clock.t += self._dt          # a little time passes per input poll
+            if self._i < len(self._keys):
+                k = self._keys[self._i]
+                self._i += 1
+                return k
+            return ord('q')
+
+    saved = play.time
+    play.time = clock
+    try:
+        # 40 direction keys within ~0.12s of simulated time. At the 110-180ms
+        # cadence that is at most one move; the old bug produced ~20.
+        scr = ClockScreen([DOWN, RIGHT] * 20, dt=0.003)
+        g = play.SnakeGame(scr)
+        moves = [0]
+        base = g.update
+        def counted():
+            moves[0] += 1
+            base()
+        g.update = counted
+        g.run()
+    finally:
+        play.time = saved
+    assert moves[0] <= 3, f'snake moved {moves[0]}x from key input alone'
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items())
              if k.startswith('test_') and callable(v)]
