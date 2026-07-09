@@ -2933,15 +2933,61 @@ class ReversiGame(Game):
         w = sum(row.count(2) for row in self.board)
         return b, w
 
+    def _evaluate(self, board, me):
+        opp = 3 - me
+        pos = empties = 0
+        for r in range(self.N):
+            row = board[r]
+            wrow = self._WEIGHTS[r]
+            for c in range(self.N):
+                v = row[c]
+                if v == 0:
+                    empties += 1
+                elif v == me:
+                    pos += wrow[c]
+                else:
+                    pos -= wrow[c]
+        my_mob = len(self._valid_moves(board, me))
+        opp_mob = len(self._valid_moves(board, opp))
+        mob = 8 * (my_mob - opp_mob)
+        if empties <= 10:  # in the endgame, actual disc count dominates
+            mine = sum(row.count(me) for row in board)
+            theirs = sum(row.count(opp) for row in board)
+            return pos + mob + 15 * (mine - theirs)
+        return pos + mob
+
+    def _negamax(self, board, player, depth, alpha, beta):
+        moves = self._valid_moves(board, player)
+        opp = 3 - player
+        if depth == 0:
+            return None, self._evaluate(board, player)
+        if not moves:
+            if not self._valid_moves(board, opp):  # neither can move: terminal
+                mine = sum(row.count(player) for row in board)
+                theirs = sum(row.count(opp) for row in board)
+                return None, (100000 if mine > theirs
+                              else -100000 if mine < theirs else 0)
+            _, val = self._negamax(board, opp, depth - 1, -beta, -alpha)
+            return None, -val
+        best_move, best_val = None, -10 ** 9
+        for (r, c) in sorted(moves, key=lambda rc: -self._WEIGHTS[rc[0]][rc[1]]):
+            nb = [row[:] for row in board]
+            self._apply(nb, r, c, player, moves[(r, c)])
+            _, val = self._negamax(nb, opp, depth - 1, -beta, -alpha)
+            val = -val
+            if val > best_val:
+                best_val, best_move = val, (r, c)
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        return best_move, best_val
+
     def _ai_move(self, valid):
-        best, best_score = [], -10 ** 9
-        for (r, c), flips in valid.items():
-            s = self._WEIGHTS[r][c] + len(flips)
-            if s > best_score:
-                best_score, best = s, [(r, c)]
-            elif s == best_score:
-                best.append((r, c))
-        return random.choice(best)
+        empties = sum(row.count(0) for row in self.board)
+        depth = 5 if empties <= 10 else 3  # search deeper when the tree is small
+        move, _ = self._negamax([row[:] for row in self.board], 2, depth,
+                                -10 ** 9, 10 ** 9)
+        return move if move in valid else random.choice(list(valid))
 
     def _finish(self):
         b, w = self._counts()
@@ -4222,27 +4268,102 @@ def _cli_c4_is_full(board):
     return all(board[0][c] != 0 for c in range(7))
 
 
-def _cli_c4_ai_move(board):
-    """Return best column (0-indexed) for AI."""
-    # Check AI winning move
-    for c in range(7):
-        if board[0][c] == 0:
-            test = [row[:] for row in board]
-            _cli_c4_drop(test, c, 2)
-            if _cli_c4_check_win(test, 2):
-                return c
-    # Block player winning move
-    for c in range(7):
-        if board[0][c] == 0:
-            test = [row[:] for row in board]
-            _cli_c4_drop(test, c, 1)
-            if _cli_c4_check_win(test, 1):
-                return c
-    # Prefer center columns: 3, 2, 4, 1, 5, 0, 6
-    for c in (3, 2, 4, 1, 5, 0, 6):
-        if board[0][c] == 0:
-            return c
+_C4_AI_DEPTH = 6
+
+
+def _c4_valid_cols(board):
+    return [c for c in range(7) if board[0][c] == 0]
+
+
+def _c4_drop_row(board, col):
+    for r in range(5, -1, -1):
+        if board[r][col] == 0:
+            return r
     return -1
+
+
+def _c4_window_score(cells, me, opp):
+    m = cells.count(me)
+    o = cells.count(opp)
+    if m and o:
+        return 0            # blocked window, worthless to either side
+    if m == 3:
+        return 60
+    if m == 2:
+        return 8
+    if o == 3:
+        return -75          # blocking an opponent threat is worth a bit more
+    if o == 2:
+        return -6
+    return 0
+
+
+def _c4_evaluate(board, me):
+    opp = 3 - me
+    score = sum(6 for r in range(6) if board[r][3] == me)  # center control
+    score -= sum(6 for r in range(6) if board[r][3] == opp)
+    for r in range(6):
+        for c in range(4):
+            score += _c4_window_score([board[r][c + i] for i in range(4)], me, opp)
+    for c in range(7):
+        for r in range(3):
+            score += _c4_window_score([board[r + i][c] for i in range(4)], me, opp)
+    for r in range(3):
+        for c in range(4):
+            score += _c4_window_score([board[r + i][c + i] for i in range(4)], me, opp)
+        for c in range(3, 7):
+            score += _c4_window_score([board[r + i][c - i] for i in range(4)], me, opp)
+    return score
+
+
+def _c4_minimax(board, depth, alpha, beta, maximizing, me):
+    opp = 3 - me
+    if _cli_c4_check_win(board, me):
+        return None, 100000 + depth        # prefer faster wins
+    if _cli_c4_check_win(board, opp):
+        return None, -100000 - depth
+    valid = _c4_valid_cols(board)
+    if not valid:
+        return None, 0                     # draw
+    if depth == 0:
+        return None, _c4_evaluate(board, me)
+    order = sorted(valid, key=lambda c: abs(c - 3))  # center-first for pruning
+    best_col = order[0]
+    if maximizing:
+        best = -10 ** 9
+        for col in order:
+            r = _c4_drop_row(board, col)
+            board[r][col] = me
+            _, val = _c4_minimax(board, depth - 1, alpha, beta, False, me)
+            board[r][col] = 0
+            if val > best:
+                best, best_col = val, col
+            alpha = max(alpha, best)
+            if alpha >= beta:
+                break
+    else:
+        best = 10 ** 9
+        for col in order:
+            r = _c4_drop_row(board, col)
+            board[r][col] = opp
+            _, val = _c4_minimax(board, depth - 1, alpha, beta, True, me)
+            board[r][col] = 0
+            if val < best:
+                best, best_col = val, col
+            beta = min(beta, best)
+            if alpha >= beta:
+                break
+    return best_col, best
+
+
+def _cli_c4_ai_move(board):
+    """Best column (0-indexed) for the AI (player 2) via alpha-beta minimax."""
+    valid = _c4_valid_cols(board)
+    if not valid:
+        return -1
+    col, _ = _c4_minimax([row[:] for row in board], _C4_AI_DEPTH,
+                         -10 ** 9, 10 ** 9, True, 2)
+    return col if col in valid else valid[0]
 
 
 def _cli_c4_move(s, action):
