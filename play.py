@@ -36,10 +36,10 @@ Usage:
     play --help       Show this help
 
 Install:
-    pip install claude-games
+    pip install terminal-games
 
 Note: the full-screen games use Python's curses module. It ships with Python on
-Linux/macOS; on Windows `pip install claude-games` also pulls in windows-curses.
+Linux/macOS; on Windows `pip install terminal-games` also pulls in windows-curses.
 The turn-based `play cli ...` games and text commands work with no curses at all.
 """
 
@@ -150,9 +150,20 @@ def _curses_wrapper(func, game_name: str = ''):
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
-CONFIG_DIR = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'claude-games'
+_CONFIG_BASE = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
+CONFIG_DIR = _CONFIG_BASE / 'terminal-games'
 SCORES_FILE = CONFIG_DIR / 'scores.json'
 GAME_STATE_FILE = CONFIG_DIR / 'current_game.json'
+
+
+def _migrate_config():
+    """One-time move of saves/scores from the pre-rename config directory."""
+    old = _CONFIG_BASE / 'claude-games'
+    try:
+        if old.is_dir() and not CONFIG_DIR.exists():
+            old.rename(CONFIG_DIR)
+    except OSError:
+        pass
 
 
 def _ensure_config():
@@ -4440,6 +4451,7 @@ def main():
         locale.setlocale(locale.LC_ALL, '')
     except (locale.Error, ValueError):
         pass
+    _migrate_config()
     args = sys.argv[1:]
 
     if not args:

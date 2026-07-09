@@ -3,7 +3,7 @@ requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "claude-games"
+name = "terminal-games"
 dynamic = ["version"]
 description = "Terminal mini games to play while you wait"
 readme = "README.md"
@@ -15,7 +15,7 @@ authors = [
 dependencies = [
     "windows-curses; platform_system == 'Windows'",
 ]
-keywords = ["games", "terminal", "cli", "snake", "tetris", "2048", "curses", "shooter", "pong", "flappy", "minesweeper", "pacman", "connect4", "sokoban", "reversi"]
+keywords = ["games", "terminal", "cli", "snake", "tetris", "2048", "curses", "shooter", "pong", "flappy", "minesweeper", "pacman", "connect4", "sokoban", "reversi", "frogger", "multiplayer"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console :: Curses",
@@ -31,8 +31,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kirti34n/claude-games"
-Repository = "https://github.com/kirti34n/claude-games"
+Homepage = "https://github.com/kirti34n/terminal-games"
+Repository = "https://github.com/kirti34n/terminal-games"
 
 [project.scripts]
 play = "play:main"

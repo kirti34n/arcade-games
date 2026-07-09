@@ -1,230 +1,172 @@
 <div align="center">
 
-# ▶ play &nbsp;·&nbsp; Terminal Mini Games
+# play
 
-<em>13 classic games in your terminal. One command. Zero setup.</em>
+**Fourteen terminal games, and a friend to beat.**
 
+One command. No setup. Runs on Linux, macOS, WSL, and Windows.
+
+<p>
 <img src="https://img.shields.io/badge/python-3.8+-3776AB.svg?logo=python&logoColor=white" alt="Python 3.8+">
-<img src="https://img.shields.io/badge/games-13-brightgreen.svg" alt="13 games">
-<img src="https://img.shields.io/badge/dependencies-0%20on%20Linux%2FmacOS-success.svg" alt="Zero deps on Linux/macOS">
-<img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="MIT License">
-<img src="https://img.shields.io/badge/platform-Linux%20·%20macOS%20·%20WSL%20·%20Windows-lightgrey.svg" alt="Platform">
+<img src="https://img.shields.io/badge/games-14-3fb950.svg" alt="14 games">
+<img src="https://img.shields.io/badge/multiplayer-LAN-8884ff.svg" alt="LAN multiplayer">
+<img src="https://img.shields.io/badge/license-MIT-eab308.svg" alt="MIT">
+</p>
 
-<br><br>
+<br>
 
 <table>
 <tr>
-<td align="center"><img src="assets/pacman.gif" width="360" alt="Pac-Man"></td>
-<td align="center"><img src="assets/tetris.gif" width="360" alt="Tetris"></td>
+<td align="center"><img src="assets/pacman.gif" width="340" alt="Pac-Man"></td>
+<td align="center"><img src="assets/tetris.gif" width="340" alt="Tetris"></td>
 </tr>
 </table>
 
 </div>
 
-```
- ╔═╗╦  ╔═╗╦ ╦╔╦╗╔═╗  ╔═╗╔═╗╔╦╗╔═╗╔═╗
- ║  ║  ╠═╣║ ║ ║║║╣   ║ ╦╠═╣║║║║╣ ╚═╗
- ╚═╝╩═╝╩ ╩╚═╝═╩╝╚═╝  ╚═╝╩ ╩╩ ╩╚═╝╚═╝
-            Play while you wait
-```
+<br>
 
-## Contents
-
-[Install](#install) · [Games](#games) · [Controls](#controls) · [Features](#features) · [Turn-based CLI mode](#turn-based-cli-mode) · [Development](#development) · [Contributing](#contributing) · [License](#license)
-
-## Install
+## Quick start
 
 ```bash
-pip install claude-games
+pip install terminal-games
 ```
-
-Then just:
 
 ```bash
-play              # open the game menu
-play snake        # jump straight into a game
-play list         # list every game and your high scores
+play                 # open the menu
+play snake           # jump straight into a game
+play mp              # play a friend over the network
+play list            # every game, with your high scores
 ```
 
-The full-screen games use Python's built-in `curses`. It ships with Python on
-Linux and macOS; on Windows the install also pulls in `windows-curses`
-automatically. The turn-based [CLI mode](#turn-based-cli-mode) needs no curses at all.
+That is the whole story. The games use Python's built-in `curses`; on Windows
+the install adds `windows-curses` for you. Nothing else to install.
 
-<details>
-<summary>Install from source</summary>
+<br>
+
+## Play with a friend
+
+Three games go two-player over a local network, one hosts and the other joins
+by IP. No account, no server, no configuration.
+
+<div align="center">
+<img src="assets/multiplayer-pong.gif" width="660" alt="Networked Pong, host and guest views side by side">
+<br>
+<sub>The same Pong rally, from each player's screen</sub>
+</div>
 
 ```bash
-git clone https://github.com/kirti34n/claude-games.git
-cd claude-games
-pip install .
+play mp              # or press M in the menu
 ```
-</details>
 
-## Games
+Pick **Reversi**, **Connect Four**, or **Pong**, then **Host** or **Join**. The
+host reads out an address like `192.168.1.5 : 8765`; the other player types it
+in. Reversi and Connect Four are turn-based and rock-solid at any latency; Pong
+is real-time and best on the same Wi-Fi.
 
-### Arcade
+<br>
 
+## The games
+
+<h3>Arcade</h3>
 <table>
 <tr>
-<td width="50%" align="center">
-<img src="assets/snake.gif" width="400" alt="Snake"><br>
-<b>Snake</b> &nbsp;·&nbsp; <code>play snake</code><br>
-<sub>Eat food, grow longer, don't hit a wall. Speeds up as you score.</sub>
-</td>
-<td width="50%" align="center">
-<img src="assets/pacman.gif" width="400" alt="Pac-Man"><br>
-<b>Pac-Man</b> &nbsp;·&nbsp; <code>play pacman</code><br>
-<sub>Eat the dots, grab a power pellet, and outrun four ghosts.</sub>
-</td>
+<td width="50%" align="center"><img src="assets/snake.gif" width="380" alt="Snake"><br><b>Snake</b> &nbsp;·&nbsp; <code>play snake</code><br><sub>Eat, grow, and don't bite your tail.</sub></td>
+<td width="50%" align="center"><img src="assets/pacman.gif" width="380" alt="Pac-Man"><br><b>Pac-Man</b> &nbsp;·&nbsp; <code>play pacman</code><br><sub>Clear the dots, dodge four hunting ghosts.</sub></td>
 </tr>
 <tr>
-<td width="50%" align="center">
-<img src="assets/dino.gif" width="400" alt="Dino Runner"><br>
-<b>Dino Runner</b> &nbsp;·&nbsp; <code>play dino</code><br>
-<sub>Jump the cacti and survive as long as you can.</sub>
-</td>
-<td width="50%" align="center">
-<img src="assets/breakout.gif" width="400" alt="Breakout"><br>
-<b>Breakout</b> &nbsp;·&nbsp; <code>play breakout</code><br>
-<sub>Smash every brick with a bouncing ball.</sub>
-</td>
+<td width="50%" align="center"><img src="assets/dino.gif" width="380" alt="Dino Runner"><br><b>Dino Runner</b> &nbsp;·&nbsp; <code>play dino</code><br><sub>Jump the cacti, run forever.</sub></td>
+<td width="50%" align="center"><img src="assets/breakout.gif" width="380" alt="Breakout"><br><b>Breakout</b> &nbsp;·&nbsp; <code>play breakout</code><br><sub>Bounce the ball, break every brick.</sub></td>
 </tr>
 <tr>
-<td width="50%" align="center">
-<img src="assets/shooter.gif" width="400" alt="Space Shooter"><br>
-<b>Space Shooter</b> &nbsp;·&nbsp; <code>play shooter</code><br>
-<sub>Blast waves of enemies, grab power-ups, defeat bosses.</sub>
-</td>
-<td width="50%" align="center">
-<img src="assets/flappy.gif" width="400" alt="Flappy Bird"><br>
-<b>Flappy Bird</b> &nbsp;·&nbsp; <code>play flappy</code><br>
-<sub>Flap through the gaps and don't crash.</sub>
-</td>
+<td width="50%" align="center"><img src="assets/shooter.gif" width="380" alt="Space Shooter"><br><b>Space Shooter</b> &nbsp;·&nbsp; <code>play shooter</code><br><sub>Waves, power-ups, and bosses.</sub></td>
+<td width="50%" align="center"><img src="assets/flappy.gif" width="380" alt="Flappy Bird"><br><b>Flappy Bird</b> &nbsp;·&nbsp; <code>play flappy</code><br><sub>Flap through the gaps.</sub></td>
 </tr>
 <tr>
-<td align="center" colspan="2">
-<img src="assets/frogger.gif" width="400" alt="Frogger"><br>
-<b>Frogger</b> &nbsp;·&nbsp; <code>play frogger</code><br>
-<sub>Hop across the traffic and the log-choked river to the home bays.</sub>
-</td>
+<td colspan="2" align="center"><img src="assets/frogger.gif" width="380" alt="Frogger"><br><b>Frogger</b> &nbsp;·&nbsp; <code>play frogger</code><br><sub>Cross the traffic and the river to the home bays.</sub></td>
 </tr>
 </table>
 
-### Puzzle
-
+<h3>Puzzle</h3>
 <table>
 <tr>
-<td width="50%" align="center">
-<img src="assets/tetris.gif" width="400" alt="Tetris"><br>
-<b>Tetris</b> &nbsp;·&nbsp; <code>play tetris</code><br>
-<sub>Stack the blocks, clear lines, level up. With a ghost piece.</sub>
-</td>
-<td width="50%" align="center">
-<img src="assets/2048.gif" width="400" alt="2048"><br>
-<b>2048</b> &nbsp;·&nbsp; <code>play 2048</code><br>
-<sub>Slide and merge tiles to reach 2048.</sub>
-</td>
+<td width="50%" align="center"><img src="assets/tetris.gif" width="380" alt="Tetris"><br><b>Tetris</b> &nbsp;·&nbsp; <code>play tetris</code><br><sub>Stack, clear lines, level up. Ghost piece included.</sub></td>
+<td width="50%" align="center"><img src="assets/2048.gif" width="380" alt="2048"><br><b>2048</b> &nbsp;·&nbsp; <code>play 2048</code><br><sub>Slide and merge to the big tile.</sub></td>
 </tr>
 <tr>
-<td width="50%" align="center">
-<img src="assets/minesweeper.gif" width="400" alt="Minesweeper"><br>
-<b>Minesweeper</b> &nbsp;·&nbsp; <code>play mines</code><br>
-<sub>Uncover the board, flag the mines. Easy / Medium / Hard.</sub>
-</td>
-<td width="50%" align="center">
-<img src="assets/sokoban.gif" width="400" alt="Sokoban"><br>
-<b>Sokoban</b> &nbsp;·&nbsp; <code>play sokoban</code><br>
-<sub>Push every box onto a target. Undo any time.</sub>
-</td>
+<td width="50%" align="center"><img src="assets/minesweeper.gif" width="380" alt="Minesweeper"><br><b>Minesweeper</b> &nbsp;·&nbsp; <code>play mines</code><br><sub>Read the numbers, flag the mines. Three sizes.</sub></td>
+<td width="50%" align="center"><img src="assets/sokoban.gif" width="380" alt="Sokoban"><br><b>Sokoban</b> &nbsp;·&nbsp; <code>play sokoban</code><br><sub>Push each box onto a target. Undo freely.</sub></td>
 </tr>
 </table>
 
-### Head-to-head
-
+<h3>Head to head <sub>(vs AI or a friend)</sub></h3>
 <table>
 <tr>
-<td width="50%" align="center">
-<img src="assets/pong.gif" width="400" alt="Pong"><br>
-<b>Pong</b> &nbsp;·&nbsp; <code>play pong</code><br>
-<sub>Classic paddle duel vs a reactive AI. Easy / Medium / Hard.</sub>
-</td>
-<td width="50%" align="center">
-<img src="assets/reversi.gif" width="400" alt="Reversi"><br>
-<b>Reversi</b> &nbsp;·&nbsp; <code>play reversi</code><br>
-<sub>Outflank a positional AI on an 8x8 board. Corners win games.</sub>
-</td>
+<td width="33%" align="center"><img src="assets/pong.gif" width="330" alt="Pong"><br><b>Pong</b> &nbsp;·&nbsp; <code>play pong</code></td>
+<td width="33%" align="center"><img src="assets/reversi.gif" width="330" alt="Reversi"><br><b>Reversi</b> &nbsp;·&nbsp; <code>play reversi</code></td>
+<td width="33%" align="center"><img src="assets/connect4.gif" width="330" alt="Connect Four"><br><b>Connect Four</b> &nbsp;·&nbsp; <code>play connect4</code></td>
 </tr>
 </table>
 
-> There is also a **Connect Four** in the [turn-based CLI mode](#turn-based-cli-mode).
+<br>
 
 ## Controls
 
 ```
- WASD / Arrow keys   Move · navigate menus
- Space               Context action: Jump (Dino) · Hard drop (Tetris) ·
-                     Launch (Breakout) · Fire (Shooter) · Serve (Pong) ·
-                     Place (Reversi) · Reveal (Minesweeper)
- W                   Rotate (Tetris)
- F                   Flag a cell (Minesweeper)
- U                   Undo a move (Sokoban)
- R                   Reset level (Sokoban) · Retry after game over
- P                   Pause
- ? / H               Show the in-game controls
- T                   Cycle color theme (in the menu)
- ESC / Q             Quit (your progress is auto-saved)
+ WASD / Arrows   Move, aim, navigate
+ Space           Jump · Hard drop · Launch · Fire · Serve · Place · Reveal
+ W               Rotate (Tetris)
+ F               Flag a cell (Minesweeper)
+ U               Undo (Sokoban)
+ R               Reset level (Sokoban) · Retry after game over
+ P               Pause
+ ? / H           In-game controls
+ M               Multiplayer (menu) · T  Theme (menu)
+ ESC / Q         Quit (progress is saved)
 ```
 
-## Features
+Space Shooter, Pong, and Minesweeper ask for a difficulty. Snake, Dino, and
+Flappy speed up as you go; Tetris levels up. Quit any game and it resumes next
+time you open it.
 
-- **Auto-save & resume** &nbsp; Quit any game with `ESC` and pick up exactly where you left off.
-- **High scores** &nbsp; Tracked per game and shown in the menu.
-- **13 games, one file** &nbsp; The entire project is a single `play.py`.
-- **Runs everywhere** &nbsp; Linux, macOS, WSL, and Windows.
-- **Zero third-party deps** on Linux/macOS (Windows just adds `windows-curses`).
-- **Difficulty levels** &nbsp; Choose Easy / Medium / Hard for Space Shooter, Pong, and Minesweeper.
-- **Color themes** &nbsp; Cycle `default`, `retro`, and `ocean` with `T` in the menu.
-- **In-game help** &nbsp; Press `?` in any game for its controls.
-- **Adaptive difficulty** &nbsp; Snake, Dino, and Flappy speed up as you go; Tetris levels up.
-- **Ghost piece** &nbsp; Tetris shows where the current piece will land.
+<br>
 
-## Turn-based CLI mode
+## Turn-based mode
 
-A text-only mode that needs no terminal UI (and no curses), handy for playing
-one move at a time, for example inside a chat or an editor.
+For playing a move at a time in a chat or an editor, `play cli` runs the games
+as plain text, no full-screen UI and no curses required.
 
 <div align="center">
-<img src="assets/cli-connect4.gif" width="300" alt="Connect Four in the turn-based CLI mode"><br>
-<sub>Connect Four vs the AI, one <code>play &lt;column&gt;</code> at a time</sub>
+<img src="assets/cli-connect4.gif" width="300" alt="Connect Four in the CLI mode">
 </div>
 
 ```bash
-play cli start snake         # also: 2048, minesweeper, connect4
-play w                       # move (WASD), or up / down / left / right
-play show                    # reprint the current board
-play reveal 5 5              # Minesweeper: reveal row 5, col 5 (first click is always safe)
-play flag 3 4                # Minesweeper: toggle a flag
-play 4                       # Connect Four: drop a disc in column 4
-play quit                    # end the game
+play cli start connect4    # also: snake, 2048, minesweeper
+play 4                     # drop a disc in column 4
+play show                  # reprint the board
+play quit                  # end the game
 ```
 
-## Development
+<br>
 
-The whole thing is one file, `play.py`, with a dependency-free test suite.
+## Built honestly
+
+One file, `play.py`, with a dependency-free test suite you can run yourself:
 
 ```bash
-python tests/test_games.py       # 20 checks: headless fuzz, save/load, and
-                                 # a regression test for every fixed bug
+python tests/test_games.py     # a headless fuzz, save/load, network, and a
+                               # regression test behind every fix
 ```
 
-The tests inject a fake `curses` module, so they run on any interpreter with or
-without a real curses build. Build the package with `python -m build`.
+Every GIF in this README is rendered straight from the game code, so what you
+see is what you get.
+
+<br>
 
 ## Contributing
 
-Issues and pull requests are welcome. Good first additions: a new game (subclass
-`Game` and add it to `_GAMES`), an extra Sokoban level, or a new color theme. Please
-run `python tests/test_games.py` before opening a PR.
+Pull requests welcome. A new game is a subclass of `Game` added to `_GAMES`; a
+new level or theme is a few lines. Please run the tests first.
 
 ## License
 
