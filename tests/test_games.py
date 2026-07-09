@@ -301,12 +301,12 @@ def test_dino_clears_cactus_on_landing():
     """Regression: landing beside a small cactus after clearing it must not kill."""
     g = play.DinoGame(MockScreen(40, 110))
     g.setup()
-    g.score = 200                      # -> speed 3.0
+    g.score = 340                      # -> speed 2.4 (cap)
     g.on_ground = False
     g.dino_y = -2.0
     g.velocity = 2.0                   # lands to 0 this tick
     g.spawn_timer = 999
-    g.obstacles = [{'x': 10.0, 'art': play._CACTUS_SM}]  # ends at 7 (left of dino)
+    g.obstacles = [{'x': 10.0, 'art': play._CACTUS_SM}]  # ends left of the dino
     g.update()
     assert not g.game_over
 
@@ -314,7 +314,7 @@ def test_dino_clears_cactus_on_landing():
 def test_dino_grounded_fast_obstacle_still_blocks_tunnel():
     g = play.DinoGame(MockScreen(40, 110))
     g.setup()
-    g.score = 200                      # speed 3.0
+    g.score = 200                      # speed ~1.83
     g.on_ground = True
     g.dino_y = 0.0
     g.velocity = 0.0

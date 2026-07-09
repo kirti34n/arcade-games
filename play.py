@@ -16,6 +16,9 @@ Usage:
     play sokoban      Play Sokoban interactively
     play reversi      Play Reversi / Othello vs AI
     play frogger      Play Frogger interactively
+    play connect4     Play Connect Four vs AI
+
+    play mp           LAN multiplayer lobby (Reversi, Connect Four, Pong)
 
     play cli                    Show in-conversation game menu
     play cli start snake        Start Snake (turn-based)
@@ -40,7 +43,7 @@ Linux/macOS; on Windows `pip install claude-games` also pulls in windows-curses.
 The turn-based `play cli ...` games and text commands work with no curses at all.
 """
 
-__version__ = '2.5.0'
+__version__ = '2.6.0'
 
 try:
     import curses
@@ -53,6 +56,7 @@ import json
 import locale
 import os
 import random
+import socket
 import sys
 import time
 from pathlib import Path
@@ -567,7 +571,8 @@ class SnakeGame(Game):
             self.food = random.choice(empty)
 
     def get_timeout(self):
-        return max(80, 180 - self.score * 3)
+        # Gentle ramp with a comfortable floor (was 80ms, which felt frantic).
+        return max(95, 180 - self.score * 2)
 
     def handle_input(self, key):
         dy, dx = self.direction
@@ -683,7 +688,8 @@ class TetrisGame(Game):
 
     @property
     def drop_interval(self):
-        return max(0.05, 0.8 - (self.level - 1) * 0.07)
+        # Higher floor (was 0.05s) so top levels stay playable, not impossible.
+        return max(0.12, 0.8 - (self.level - 1) * 0.055)
 
     def _spawn(self):
         self.cur_type = self.next_type
@@ -997,10 +1003,15 @@ class Game2048(Game):
 
 # ─── Dino Runner ─────────────────────────────────────────────────────────────
 
-_DINO = [[" O ", "/|\\", "/ \\"], [" O ", "/|\\", "| \\"]]
-_CACTUS_SM = [" ^ ", " | "]
-_CACTUS_LG = [" ^ ", "/|\\", " | ", " | "]
-_CACTUS_XL = [" ^ ", "/|\\", "-|-", " | ", " | "]
+# A little right-facing T-rex (two run frames with alternating legs) and three
+# saguaro cacti. Block glyphs render in any modern monospace font.
+_DINO = [
+    ["  ▟◣", "◢██▛", " ▙▟ "],
+    ["  ▟◣", "◢██▛", " ▟▙ "],
+]
+_CACTUS_SM = ["▗█ ", " █ "]
+_CACTUS_LG = ["▖█▗", "▝█▘", " █ ", " █ "]
+_CACTUS_XL = ["▖█▗", "▝█▘", "▖█▗", "▝█▘", " █ "]
 
 
 class DinoGame(Game):
@@ -1047,7 +1058,7 @@ class DinoGame(Game):
                 'obstacles': self.obstacles}
 
     def get_timeout(self):
-        return 40
+        return 48  # a touch calmer than 40ms so obstacles are readable
 
     def handle_input(self, key):
         if (key == ord(' ') or key == curses.KEY_UP or key == ord('w')) and self.on_ground:
@@ -1058,7 +1069,7 @@ class DinoGame(Game):
         self.frame += 1
         if self.frame % 3 == 0:
             self.score += 1
-        self.speed = min(3.0, 1.0 + self.score / 100.0)
+        self.speed = min(2.4, 1.0 + self.score / 240.0)  # slower, capped ramp
 
         prev_dino_y = self.dino_y  # for coherent swept collision below
         if not self.on_ground:
@@ -1106,11 +1117,12 @@ class DinoGame(Game):
         if self.obstacles and self.obstacles[-1]['x'] > self.w - 20:
             self.spawn_timer = 5
             return
-        kind = random.choices(['sm', 'lg', 'xl'], weights=[50, 35, 15])[0]
+        kind = random.choices(['sm', 'lg', 'xl'], weights=[55, 33, 12])[0]
         art = {'sm': _CACTUS_SM, 'lg': _CACTUS_LG, 'xl': _CACTUS_XL}[kind]
         self.obstacles.append({'x': float(self.w), 'art': art})
-        mn = max(15, int(30 / self.speed))
-        mx = max(25, int(55 / self.speed))
+        # More breathing room between obstacles so jumps stay fair.
+        mn = max(22, int(38 / self.speed))
+        mx = max(38, int(64 / self.speed))
         self.spawn_timer = random.randint(mn, mx)
 
     def draw(self):
@@ -1705,10 +1717,16 @@ class PongGame(Game):
     WIN_SCORE = 11
 
     def setup(self):
-        saved = self._load_save(self.name)
+        # In a network game the host owns physics (left paddle); the guest sends
+        # its paddle (right) and renders the host's authoritative state.
+        self.net = getattr(self, 'net', None)
+        self.role = getattr(self, 'role', 'host')
+        saved = self._load_save(self.name) if not self.net else None
         if saved:
             for k, v in saved.items():
                 setattr(self, k, v)
+            self.net = None
+            self.role = 'host'
             return
         diff = self.difficulty
         # Values chosen so the paddle step (max(1, round(ai_speed*2))) is a
@@ -1742,6 +1760,8 @@ class PongGame(Game):
         return [('You', self.player_score), ('AI', self.ai_score)]
 
     def get_save_data(self):
+        if self.net:
+            return None  # never resume a network game
         return {
             'difficulty': self.difficulty,
             'ai_speed': self.ai_speed, 'ai_error': self.ai_error,
@@ -1766,16 +1786,68 @@ class PongGame(Game):
         self.rally = 0
 
     def handle_input(self, key):
+        top = self.h - self.PADDLE_H - 2
+        if self.net and self.role == 'guest':
+            if key in (ord('w'), curses.KEY_UP):
+                self.ai_y = max(2, self.ai_y - 2)
+            elif key in (ord('s'), curses.KEY_DOWN):
+                self.ai_y = min(top, self.ai_y + 2)
+            return
         if key == ord('w') or key == curses.KEY_UP:
             self.player_y = max(2, self.player_y - 2)
         elif key == ord('s') or key == curses.KEY_DOWN:
-            self.player_y = min(self.h - self.PADDLE_H - 2, self.player_y + 2)
+            self.player_y = min(top, self.player_y + 2)
         elif key == ord(' ') and self.serving:
             self._serve()
 
+    def _state(self):
+        return {'type': 's', 'bx': self.ball_x, 'by': self.ball_y,
+                'py': self.player_y, 'ay': self.ai_y,
+                'psc': self.player_score, 'asc': self.ai_score,
+                'sv': self.serving, 'go': self.game_over}
+
+    def _apply_state(self, m):
+        self.ball_x = m.get('bx', self.ball_x)
+        self.ball_y = m.get('by', self.ball_y)
+        self.player_y = m.get('py', self.player_y)   # host (opponent) paddle
+        self.player_score = m.get('psc', self.player_score)
+        self.ai_score = m.get('asc', self.ai_score)
+        self.serving = m.get('sv', self.serving)
+        # guest keeps its own ai_y (responsive); the host trusts what it receives
+        if (m.get('go') or self.player_score >= self.WIN_SCORE
+                or self.ai_score >= self.WIN_SCORE):
+            self.game_over = True
+            self.won = self.ai_score >= self.WIN_SCORE  # guest is the right paddle
+
     def update(self):
         self.frame += 1
+        if self.net and not self.net.alive:
+            self.game_over = True
+            return
+        if self.net and self.role == 'guest':
+            self.net.send({'type': 'p', 'y': int(self.ai_y)})
+            latest = None
+            m = self.net.poll()
+            while m is not None:
+                if m.get('type') == 's':
+                    latest = m
+                m = self.net.poll()
+            if latest:
+                self._apply_state(latest)
+            return
+        if self.net and self.role == 'host':
+            top = self.h - self.PADDLE_H - 2
+            m = self.net.poll()
+            while m is not None:
+                if m.get('type') == 'p':
+                    try:
+                        self.ai_y = max(2, min(top, int(m['y'])))
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                m = self.net.poll()
         if self.serving:
+            if self.net and self.role == 'host':
+                self.net.send(self._state())
             return
 
         self.ball_x += self.ball_dx
@@ -1821,24 +1893,28 @@ class PongGame(Game):
             self.serving = True
             self._check_win()
 
-        # AI target prediction
-        if self.frame % self.ai_react == 0:
-            if self.ball_dx > 0:
-                dist = max(1.0, ai_x - self.ball_x)
-                pred_y = self.ball_y + self.ball_dy * (dist / max(0.1, abs(self.ball_dx)))
-                pred_y += random.uniform(-self.ai_error, self.ai_error)
-                self.ai_target = max(2.0, min(float(self.h - 3), pred_y))
-            else:
-                self.ai_target = float(self.h // 2)
+        # The right paddle is the AI (solo) or the guest (network).
+        if not self.net:
+            # AI target prediction
+            if self.frame % self.ai_react == 0:
+                if self.ball_dx > 0:
+                    dist = max(1.0, ai_x - self.ball_x)
+                    pred_y = self.ball_y + self.ball_dy * (dist / max(0.1, abs(self.ball_dx)))
+                    pred_y += random.uniform(-self.ai_error, self.ai_error)
+                    self.ai_target = max(2.0, min(float(self.h - 3), pred_y))
+                else:
+                    self.ai_target = float(self.h // 2)
+            # AI movement
+            ai_center = self.ai_y + self.PADDLE_H / 2.0
+            if ai_center < self.ai_target - 0.5:
+                move = max(1, round(self.ai_speed * 2))
+                self.ai_y = min(self.h - self.PADDLE_H - 2, self.ai_y + move)
+            elif ai_center > self.ai_target + 0.5:
+                move = max(1, round(self.ai_speed * 2))
+                self.ai_y = max(2, self.ai_y - move)
 
-        # AI movement
-        ai_center = self.ai_y + self.PADDLE_H / 2.0
-        if ai_center < self.ai_target - 0.5:
-            move = max(1, round(self.ai_speed * 2))
-            self.ai_y = min(self.h - self.PADDLE_H - 2, self.ai_y + move)
-        elif ai_center > self.ai_target + 0.5:
-            move = max(1, round(self.ai_speed * 2))
-            self.ai_y = max(2, self.ai_y - move)
+        if self.net and self.role == 'host':
+            self.net.send(self._state())
 
     def _speed_up(self):
         speed = (self.ball_dx ** 2 + self.ball_dy ** 2) ** 0.5
@@ -1861,9 +1937,15 @@ class PongGame(Game):
         score_s = f'{self.player_score}    {self.ai_score}'
         self.center_text(1, score_s, curses.A_BOLD)
         sc_x = max(0, (self.w - len(score_s)) // 2)
-        self.safe_addstr(1, max(0, sc_x - 4), 'YOU',
+        if not self.net:
+            left_lab, right_lab = 'YOU', 'CPU'
+        elif self.role == 'host':
+            left_lab, right_lab = 'YOU', 'OPP'
+        else:
+            left_lab, right_lab = 'OPP', 'YOU'
+        self.safe_addstr(1, max(0, sc_x - len(left_lab) - 1), left_lab,
                          curses.color_pair(1))
-        self.safe_addstr(1, min(self.w - 3, sc_x + len(score_s) + 1), 'CPU',
+        self.safe_addstr(1, min(self.w - 3, sc_x + len(score_s) + 1), right_lab,
                          curses.color_pair(2))
 
         # Center net
@@ -1886,6 +1968,9 @@ class PongGame(Game):
         if not self.serving:
             self.safe_addstr(int(self.ball_y), int(self.ball_x), 'O',
                              curses.color_pair(3) | curses.A_BOLD)
+        elif self.net and self.role == 'guest':
+            self.center_text(self.h // 2, ' Waiting for host to serve ',
+                             curses.color_pair(4) | curses.A_REVERSE)
         else:
             self.center_text(self.h // 2, ' Press SPACE to serve ',
                              curses.color_pair(4) | curses.A_REVERSE)
@@ -1905,7 +1990,7 @@ class FlappyGame(Game):
 
     GRAVITY = 0.3
     JUMP_VEL = -1.5
-    PIPE_GAP = 6
+    PIPE_GAP = 7
     PIPE_WIDTH = 3
     PIPE_INTERVAL = 35
     BIRD_X = 10
@@ -1941,7 +2026,7 @@ class FlappyGame(Game):
 
     def update(self):
         self.frame += 1
-        self.speed = min(3.0, 1.0 + self.score * 0.04)
+        self.speed = min(2.2, 1.0 + self.score * 0.028)
 
         self.bird_vel += self.GRAVITY
         self.bird_y += self.bird_vel
@@ -2507,7 +2592,7 @@ class PacManGame(Game):
             if self._ghost_collision():
                 return
 
-        if self.frame % 150 == 0 and self.ghost_speed > 1:
+        if self.frame % 240 == 0 and self.ghost_speed > 1:
             self.ghost_speed = max(1, self.ghost_speed - 1)
 
     def _ghost_collision(self):
@@ -2778,7 +2863,11 @@ class ReversiGame(Game):
     ]
 
     def setup(self):
-        saved = self._load_save(self.name)
+        # net (a _NetLink) and local_player (1=black/host, 2=white/guest) may be
+        # set by the multiplayer lobby before run(); default to solo vs AI.
+        self.net = getattr(self, 'net', None)
+        self.local_player = getattr(self, 'local_player', 1)
+        saved = self._load_save(self.name) if not self.net else None
         if saved:
             self.board = saved['board']
             self.cur_r = saved['cur_r']
@@ -2790,15 +2879,15 @@ class ReversiGame(Game):
         n = self.N
         self.board = [[0] * n for _ in range(n)]
         m = n // 2
-        self.board[m - 1][m - 1] = self.board[m][m] = 2   # white = AI
-        self.board[m - 1][m] = self.board[m][m - 1] = 1   # black = player
+        self.board[m - 1][m - 1] = self.board[m][m] = 2   # white
+        self.board[m - 1][m] = self.board[m][m - 1] = 1   # black (moves first)
         self.cur_r = self.cur_c = m
         self.turn = 1
         self.score = 2
-        self.message = 'Your move (black)'
+        self.message = ''
 
     def get_timeout(self):
-        return -1
+        return 120 if self.net else -1  # net games poll; local games block
 
     def _flips(self, board, r, c, player):
         if board[r][c] != 0:
@@ -2845,11 +2934,13 @@ class ReversiGame(Game):
 
     def _finish(self):
         b, w = self._counts()
-        self.score = b
-        self.won = b > w
+        mine = b if self.local_player == 1 else w
+        theirs = w if self.local_player == 1 else b
+        self.score = mine
+        self.won = mine > theirs
         self.game_over = True
-        self.message = ('You win!' if b > w else
-                        'Draw' if b == w else 'AI wins')
+        self.message = ('You win!' if mine > theirs else
+                        'Draw' if mine == theirs else 'You lose')
 
     def handle_input(self, key):
         if key in (curses.KEY_UP, ord('w')):
@@ -2861,42 +2952,62 @@ class ReversiGame(Game):
         elif key in (curses.KEY_RIGHT, ord('d')):
             self.cur_c = (self.cur_c + 1) % self.N
         elif key in (curses.KEY_ENTER, ord(' '), 10, 13):
-            if self.turn == 1:
-                valid = self._valid_moves(self.board, 1)
+            if self.turn == self.local_player:
+                valid = self._valid_moves(self.board, self.local_player)
                 if (self.cur_r, self.cur_c) in valid:
-                    self._apply(self.board, self.cur_r, self.cur_c, 1,
-                                valid[(self.cur_r, self.cur_c)])
-                    self.turn = 2
+                    self._apply(self.board, self.cur_r, self.cur_c,
+                                self.local_player, valid[(self.cur_r, self.cur_c)])
+                    if self.net:
+                        self.net.send({'type': 'place',
+                                       'r': self.cur_r, 'c': self.cur_c})
+                    self.turn = 3 - self.local_player
 
     def update(self):
         if self.game_over:
             return
-        # Resolve turns/passes until it is the player's move (with a legal
-        # option) or neither side can move. The bound safely exceeds the most
-        # AI moves/passes possible in one call (one disc placed per cell).
+        if self.net and not self.net.alive:
+            self.score = self._counts()[0]
+            self.game_over = True
+            self.message = 'Opponent disconnected'
+            return
+        # Resolve turns/passes until it is the local player's move (with a legal
+        # option) or the game ends. The opponent's move comes from the AI (solo)
+        # or the network (multiplayer); passes are deterministic from the board.
         for _ in range(self.N * self.N + 4):
             pv = self._valid_moves(self.board, 1)
             av = self._valid_moves(self.board, 2)
-            b, _w = self._counts()
-            self.score = b
+            b, w = self._counts()
+            self.score = b if self.local_player == 1 else w
             if not pv and not av:
                 self._finish()
                 return
-            if self.turn == 1:
-                if pv:
-                    self.message = 'Your move (black)'
+            cur = self.turn
+            curv = pv if cur == 1 else av
+            if cur == self.local_player:
+                if curv:
+                    self.message = 'Your move'
                     return
                 self.message = 'No move - you pass'
-                self.turn = 2
+                self.turn = 3 - cur
+                continue
+            # opponent's turn
+            if not curv:
+                self.turn = 3 - cur
+                continue
+            if self.net:
+                msg = self.net.poll()
+                if not (msg and msg.get('type') == 'place'):
+                    self.message = "Opponent's turn..."
+                    return  # keep polling next tick
+                r, c = msg.get('r'), msg.get('c')
+                if (r, c) not in curv:
+                    return  # ignore illegal / malformed
+                self._apply(self.board, r, c, cur, curv[(r, c)])
             else:
-                if av:
-                    r, c = self._ai_move(av)
-                    self._apply(self.board, r, c, 2, av[(r, c)])
-                    self.message = f'AI played {chr(65 + c)}{r + 1}'
-                    self.turn = 1
-                else:
-                    self.message = 'AI passes'
-                    self.turn = 1
+                r, c = self._ai_move(curv)
+                self._apply(self.board, r, c, cur, curv[(r, c)])
+                self.message = f'AI played {chr(65 + c)}{r + 1}'
+            self.turn = 3 - cur
 
     def draw(self):
         b, w = self._counts()
@@ -2904,13 +3015,19 @@ class ReversiGame(Game):
         sx = max(0, (self.w - gw) // 2)
         sy = max(1, (self.h - self.N - 4) // 2)
         self.safe_addstr(sy - 1, sx, ' REVERSI ', curses.A_BOLD | curses.A_REVERSE)
-        score = f'You(X):{b}   AI(O):{w}'
+        if self.net:
+            xlab = 'You' if self.local_player == 1 else 'Opp'
+            olab = 'You' if self.local_player == 2 else 'Opp'
+            score = f'{xlab}(X):{b}   {olab}(O):{w}'
+        else:
+            score = f'You(X):{b}   AI(O):{w}'
         self.safe_addstr(sy - 1, sx + gw - len(score), score,
                          curses.color_pair(3) | curses.A_BOLD)
         self.safe_addstr(sy, sx + 3,
                          ' '.join(chr(65 + c) for c in range(self.N)),
                          curses.color_pair(4))
-        valid = self._valid_moves(self.board, 1) if self.turn == 1 else {}
+        valid = (self._valid_moves(self.board, self.local_player)
+                 if (self.turn == self.local_player and not self.game_over) else {})
         for r in range(self.N):
             self.safe_addstr(sy + 1 + r, sx, f'{r + 1:>2}', curses.color_pair(4))
             for c in range(self.N):
@@ -2940,6 +3057,8 @@ class ReversiGame(Game):
         return [('You (X)', b), ('AI (O)', w)]
 
     def get_save_data(self):
+        if self.net:
+            return None  # never resume a network game
         return {'board': self.board, 'cur_r': self.cur_r, 'cur_c': self.cur_c,
                 'turn': self.turn, 'score': self.score, 'message': self.message}
 
@@ -3136,12 +3255,226 @@ class FroggerGame(Game):
                 'best_row': self.best_row}
 
 
+# ─── Networking (LAN multiplayer) ────────────────────────────────────────────
+
+NET_DEFAULT_PORT = 8765
+NET_PROTOCOL = 1
+
+
+class _NetLink:
+    """Newline-delimited JSON messages over a TCP socket, non-blocking reads."""
+
+    def __init__(self, sock, role):
+        self.sock = sock
+        self.role = role          # 'host' or 'guest'
+        self.sock.setblocking(False)
+        self._buf = b''
+        self.alive = True
+
+    def send(self, obj):
+        if not self.alive:
+            return
+        try:
+            self.sock.sendall((json.dumps(obj) + '\n').encode('utf-8'))
+        except OSError:
+            self.alive = False
+
+    def poll(self):
+        """Return the next complete message dict, or None if none is ready."""
+        try:
+            chunk = self.sock.recv(4096)
+            if chunk == b'':
+                self.alive = False
+            else:
+                self._buf += chunk
+        except (BlockingIOError, InterruptedError):
+            pass
+        except OSError:
+            self.alive = False
+        if b'\n' in self._buf:
+            line, self._buf = self._buf.split(b'\n', 1)
+            line = line.strip()
+            if line:
+                try:
+                    return json.loads(line.decode('utf-8'))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return None
+        return None
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        self.alive = False
+
+
+def _local_ip():
+    """Best-effort primary LAN IP (no packet is actually sent)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+    except OSError:
+        ip = '127.0.0.1'
+    finally:
+        s.close()
+    return ip
+
+
+# ─── Connect Four (full-screen, single-player + LAN) ─────────────────────────
+
+class ConnectFourGame(Game):
+    name = "connect4"
+    min_h = 18
+    min_w = 34
+    ROWS, COLS = 6, 7
+
+    def setup(self):
+        self.net = getattr(self, 'net', None)
+        self.local_player = getattr(self, 'local_player', 1)
+        saved = self._load_save(self.name) if not self.net else None
+        if saved:
+            self.board = saved['board']
+            self.cursor = saved['cursor']
+            self.turn = saved['turn']
+            self.score = saved['score']
+            self.message = saved.get('message', '')
+            return
+        self.board = [[0] * self.COLS for _ in range(self.ROWS)]
+        self.cursor = self.COLS // 2
+        self.turn = 1
+        self.score = 0
+        self.message = ''
+
+    def get_timeout(self):
+        return 120 if self.net else -1  # net games poll; local games block
+
+    def _drop(self, col, player):
+        for r in range(self.ROWS - 1, -1, -1):
+            if self.board[r][col] == 0:
+                self.board[r][col] = player
+                return r
+        return -1
+
+    def _do_move(self, col, player):
+        if not (0 <= col < self.COLS) or self.board[0][col] != 0:
+            return False
+        self._drop(col, player)
+        if _cli_c4_check_win(self.board, player):
+            self.game_over = True
+            self.won = (player == self.local_player)
+            self.score = 1 if self.won else 0
+            self.message = 'You win!' if self.won else 'You lose'
+        elif all(self.board[0][c] != 0 for c in range(self.COLS)):
+            self.game_over = True
+            self.message = "It's a draw!"
+        else:
+            self.turn = 3 - player
+        return True
+
+    def handle_input(self, key):
+        if self.game_over:
+            return
+        if key in (curses.KEY_LEFT, ord('a')):
+            self.cursor = (self.cursor - 1) % self.COLS
+        elif key in (curses.KEY_RIGHT, ord('d')):
+            self.cursor = (self.cursor + 1) % self.COLS
+        elif key in (curses.KEY_ENTER, ord(' '), 10, 13):
+            if self.turn == self.local_player and self.board[0][self.cursor] == 0:
+                col = self.cursor
+                if self._do_move(col, self.local_player) and self.net:
+                    self.net.send({'type': 'drop', 'col': col})
+
+    def update(self):
+        if self.game_over:
+            return
+        opp = 3 - self.local_player
+        if self.net:
+            if not self.net.alive:
+                self.game_over = True
+                self.message = 'Opponent disconnected'
+                return
+            if self.turn == opp:
+                msg = self.net.poll()
+                if msg and msg.get('type') == 'drop':
+                    self._do_move(msg.get('col'), opp)
+        elif self.turn == opp:  # single-player AI
+            col = _cli_c4_ai_move(self.board)
+            if col >= 0:
+                self._do_move(col, opp)
+
+    def draw(self):
+        gw = self.COLS * 4 + 1
+        sx = max(0, (self.w - gw) // 2)
+        sy = max(1, (self.h - self.ROWS * 2 - 6) // 2)
+        title = ' CONNECT FOUR '
+        self.safe_addstr(sy, max(0, (self.w - len(title)) // 2), title,
+                         curses.A_BOLD | curses.A_REVERSE)
+        # column picker + numbers
+        for c in range(self.COLS):
+            cx = sx + 2 + c * 4
+            if c == self.cursor and not self.game_over and self._my_turn():
+                self.safe_addstr(sy + 1, cx, 'v',
+                                 curses.color_pair(3) | curses.A_BOLD)
+            self.safe_addstr(sy + 2, cx, str(c + 1), curses.color_pair(4))
+        top = sy + 3
+        self.safe_addstr(top, sx, '┌' + '───┬' * (self.COLS - 1) + '───┐')
+        for r in range(self.ROWS):
+            ry = top + 1 + r * 2
+            self.safe_addstr(ry, sx, '│' + '   │' * self.COLS)
+            for c in range(self.COLS):
+                v = self.board[r][c]
+                cx = sx + 2 + c * 4
+                if v == 1:
+                    self.safe_addstr(ry, cx, 'X', curses.color_pair(2) | curses.A_BOLD)
+                elif v == 2:
+                    self.safe_addstr(ry, cx, 'O', curses.color_pair(3) | curses.A_BOLD)
+            mid = ('├' + '───┼' * (self.COLS - 1) + '───┤'
+                   if r < self.ROWS - 1 else
+                   '└' + '───┴' * (self.COLS - 1) + '───┘')
+            self.safe_addstr(ry + 1, sx, mid)
+        # status line
+        status = self._status()
+        self.safe_addstr(top + self.ROWS * 2 + 1,
+                         max(0, (self.w - len(status)) // 2), status,
+                         curses.color_pair(3) | curses.A_BOLD)
+        hint = 'A/D:Column  Space:Drop  ?:Help  ESC:Quit'
+        self.safe_addstr(top + self.ROWS * 2 + 2,
+                         max(0, (self.w - len(hint)) // 2), hint,
+                         curses.color_pair(4))
+
+    def _my_turn(self):
+        return self.turn == self.local_player
+
+    def _status(self):
+        if self.game_over:
+            return self.message or 'Game over'
+        if self.net:
+            return 'Your turn (X)' if self._my_turn() else "Opponent's turn..."
+        return 'Your turn (X)' if self.turn == 1 else 'AI is thinking...'
+
+    def get_controls(self):
+        return [('A/D or arrows', 'Choose column'), ('Space/Enter', 'Drop disc'),
+                ('ESC', 'Quit')]
+
+    def get_stats(self):
+        return []
+
+    def get_save_data(self):
+        if self.net:
+            return None  # never resume a network game
+        return {'board': self.board, 'cursor': self.cursor, 'turn': self.turn,
+                'score': self.score, 'message': self.message}
+
+
 # ─── Menu ────────────────────────────────────────────────────────────────────
 
 _ICONS = {'snake': '~o~', 'tetris': '[#]', '2048': ' 2K', 'dino': '/^\\',
           'breakout': '[=]', 'shooter': '/A\\', 'pong': '|O|',
           'flappy': '>>=', 'minesweeper_i': '[*]', 'pacman': 'C.M',
-          'sokoban': '[$]', 'reversi': 'XO ', 'frogger': '@^^'}
+          'sokoban': '[$]', 'reversi': 'XO ', 'frogger': '@^^',
+          'connect4': 'OXO'}
 
 _GAMES = [
     ("Snake",         "Classic snake - eat food, grow longer",     SnakeGame),
@@ -3157,6 +3490,7 @@ _GAMES = [
     ("Sokoban",       "Push every box onto a target",             SokobanGame),
     ("Reversi",       "Outflank the AI on an 8x8 board",          ReversiGame),
     ("Frogger",       "Hop across road and river to the bays",    FroggerGame),
+    ("Connect Four",  "Drop discs, get four in a row (vs AI)",    ConnectFourGame),
 ]
 
 _TITLE = [
@@ -3174,7 +3508,8 @@ _GAME_MAP.update({'dino': DinoGame, '2048': Game2048,
                   'pac': PacManGame, 'sokoban': SokobanGame,
                   'boxes': SokobanGame, 'reversi': ReversiGame,
                   'othello': ReversiGame, 'frogger': FroggerGame,
-                  'frog': FroggerGame})
+                  'frog': FroggerGame, 'connect4': ConnectFourGame,
+                  'connectfour': ConnectFourGame, 'c4': ConnectFourGame})
 
 
 def _safe(stdscr, y, x, text, attr=0):
@@ -3278,7 +3613,7 @@ def _menu(stdscr):
                   curses.color_pair(3))
 
         cy = min(h - 2, ly + visible * 2 + 1)
-        ctrl = "Up/Down: Select  Enter: Play  T: Theme  ?: Help  Q: Quit"
+        ctrl = "Up/Down: Select  Enter: Play  M: Multiplayer  T: Theme  Q: Quit"
         _safe(stdscr, cy, max(0, (w - len(ctrl)) // 2), ctrl,
               curses.color_pair(7))
         theme_label = f'Theme: {_current_theme}'
@@ -3294,6 +3629,10 @@ def _menu(stdscr):
             sel = (sel + 1) % len(_GAMES)
         elif key in (curses.KEY_ENTER, 10, 13):
             _run_game(stdscr, _GAMES[sel][2])
+            stdscr.nodelay(False)
+        elif key in (ord('m'), ord('M')):
+            _net_menu(stdscr)
+            stdscr.nodelay(False)
         elif key in (ord('t'), ord('T')):
             names = list(_THEMES.keys())
             idx = names.index(_current_theme) if _current_theme in names else 0
@@ -3301,6 +3640,216 @@ def _menu(stdscr):
             init_colors()
         elif key in (ord('q'), 27):
             break
+
+
+# ─── Multiplayer lobby ───────────────────────────────────────────────────────
+
+_NET_GAMES = [
+    ('Reversi', ReversiGame, 'reversi'),
+    ('Connect Four', ConnectFourGame, 'connect4'),
+    ('Pong', PongGame, 'pong'),
+]
+
+
+def _net_status(stdscr, lines):
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+    top = max(0, h // 2 - len(lines) // 2)
+    for i, ln in enumerate(lines):
+        attr = curses.A_BOLD if i == 0 else curses.color_pair(4)
+        _safe(stdscr, top + i, max(0, (w - len(ln)) // 2), ln, attr)
+    stdscr.noutrefresh()
+    curses.doupdate()
+
+
+def _net_select(stdscr, title, options):
+    """Vertical picker; returns the chosen index, or None on ESC."""
+    sel = 0
+    stdscr.nodelay(False)
+    while True:
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+        _safe(stdscr, h // 2 - len(options) - 2, max(0, (w - len(title)) // 2),
+              title, curses.A_BOLD)
+        for i, opt in enumerate(options):
+            y = h // 2 - len(options) // 2 + i
+            label = f'  {opt}  '
+            attr = (curses.A_REVERSE | curses.A_BOLD) if i == sel else 0
+            _safe(stdscr, y, max(0, (w - len(label)) // 2), label, attr)
+        _safe(stdscr, h // 2 + len(options) // 2 + 2, max(0, (w - 22) // 2),
+              'Enter: OK    ESC: Back', curses.color_pair(4))
+        stdscr.noutrefresh()
+        curses.doupdate()
+        k = stdscr.getch()
+        if k in (curses.KEY_UP, ord('w'), ord('k')):
+            sel = (sel - 1) % len(options)
+        elif k in (curses.KEY_DOWN, ord('s'), ord('j')):
+            sel = (sel + 1) % len(options)
+        elif k in (curses.KEY_ENTER, 10, 13):
+            return sel
+        elif k in (27, ord('q')):
+            return None
+
+
+def _net_text_input(stdscr, prompt, default=''):
+    """Read a short line of text; returns the string, or None on ESC."""
+    buf = list(default)
+    try:
+        curses.curs_set(1)
+    except curses.error:
+        pass
+    stdscr.nodelay(False)
+    while True:
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+        _safe(stdscr, h // 2 - 1, max(0, (w - len(prompt)) // 2), prompt,
+              curses.A_BOLD)
+        shown = '> ' + ''.join(buf)
+        _safe(stdscr, h // 2 + 1, max(0, (w - 40) // 2), shown,
+              curses.color_pair(3) | curses.A_BOLD)
+        _safe(stdscr, h // 2 + 3, max(0, (w - 22) // 2),
+              'Enter: OK    ESC: Back', curses.color_pair(4))
+        stdscr.noutrefresh()
+        curses.doupdate()
+        k = stdscr.getch()
+        if k in (curses.KEY_ENTER, 10, 13):
+            break
+        if k in (27,):
+            buf = None
+            break
+        if k in (curses.KEY_BACKSPACE, 127, 8):
+            if buf:
+                buf.pop()
+        elif 32 <= k < 127 and len(buf) < 30:
+            buf.append(chr(k))
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
+    return None if buf is None else ''.join(buf).strip()
+
+
+def _net_await(link, timeout):
+    """Block (briefly) for the next message, or None on timeout/disconnect."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not link.alive:
+            return None
+        msg = link.poll()
+        if msg is not None:
+            return msg
+        time.sleep(0.02)
+    return None
+
+
+def _net_handshake(stdscr, link, game_key):
+    link.send({'type': 'hello', 'proto': NET_PROTOCOL, 'game': game_key})
+    hello = _net_await(link, 6.0)
+    ok = (hello and hello.get('proto') == NET_PROTOCOL
+          and hello.get('game') == game_key)
+    if not ok:
+        _net_status(stdscr, ['Handshake failed',
+                             'The other side is on a different game or version.',
+                             '', 'Press any key to go back'])
+        stdscr.nodelay(False)
+        stdscr.getch()
+        link.close()
+    return ok
+
+
+def _net_host_wait(stdscr, game_key):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind(('0.0.0.0', NET_DEFAULT_PORT))
+    except OSError as e:
+        _net_status(stdscr, [f'Cannot open port {NET_DEFAULT_PORT}', str(e),
+                             '', 'Press any key to go back'])
+        stdscr.nodelay(False)
+        stdscr.getch()
+        srv.close()
+        return None
+    srv.listen(1)
+    srv.settimeout(0.25)
+    ip = _local_ip()
+    stdscr.nodelay(True)
+    conn = None
+    while True:
+        _net_status(stdscr, [f'Hosting {game_key.upper()}', '',
+                             f'Tell your opponent to Join at:',
+                             f'    {ip} : {NET_DEFAULT_PORT}', '',
+                             'Waiting for a player...   (ESC to cancel)'])
+        try:
+            conn, _addr = srv.accept()
+            break
+        except (socket.timeout, BlockingIOError):
+            pass
+        except OSError:
+            break
+        if stdscr.getch() in (27, ord('q')):
+            break
+    stdscr.nodelay(False)
+    srv.close()
+    if conn is None:
+        return None
+    link = _NetLink(conn, 'host')
+    return link if _net_handshake(stdscr, link, game_key) else None
+
+
+def _net_join_connect(stdscr, game_key):
+    ip = _net_text_input(stdscr, "Host's IP address (blank = 127.0.0.1):", '')
+    if ip is None:
+        return None
+    if not ip:
+        ip = '127.0.0.1'
+    _net_status(stdscr, [f'Connecting to {ip}:{NET_DEFAULT_PORT} ...'])
+    try:
+        sock = socket.create_connection((ip, NET_DEFAULT_PORT), timeout=6.0)
+    except OSError as e:
+        _net_status(stdscr, [f'Could not connect to {ip}', str(e),
+                             '', 'Press any key to go back'])
+        stdscr.nodelay(False)
+        stdscr.getch()
+        return None
+    link = _NetLink(sock, 'guest')
+    return link if _net_handshake(stdscr, link, game_key) else None
+
+
+def _net_menu(stdscr):
+    if not _HAS_CURSES:
+        return
+    init_colors()
+    gi = _net_select(stdscr, 'MULTIPLAYER (LAN)   choose a game',
+                     [g[0] for g in _NET_GAMES])
+    if gi is None:
+        return
+    name, cls, key = _NET_GAMES[gi]
+    ri = _net_select(stdscr, f'{name}   host or join?',
+                     ['Host  (wait for a player)', 'Join  (connect to a host)'])
+    if ri is None:
+        return
+    is_host = (ri == 0)
+    link = (_net_host_wait(stdscr, key) if is_host
+            else _net_join_connect(stdscr, key))
+    if link is None:
+        return
+    game = cls(stdscr)
+    game.net = link
+    if cls is PongGame:
+        game.role = 'host' if is_host else 'guest'
+    else:
+        game.local_player = 1 if is_host else 2
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
+    init_colors()
+    stdscr.nodelay(False)
+    try:
+        game.run()
+    finally:
+        link.close()
+        stdscr.nodelay(False)
 
 
 # ─── CLI: Snake ──────────────────────────────────────────────────────────────
@@ -3933,6 +4482,8 @@ def main():
 
     if cmd == 'cli':
         _cli_mode(args[1:])
+    elif cmd in ('mp', 'multiplayer', 'net'):
+        _curses_wrapper(_net_menu, 'multiplayer')
     elif cmd in ('h', 'help'):
         print(__doc__.strip())
     elif cmd in ('v', 'version'):
