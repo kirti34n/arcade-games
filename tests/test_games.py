@@ -41,12 +41,22 @@ sys.modules['curses'] = _fake
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import play  # noqa: E402
+from terminal_games import config as _config  # noqa: E402
+from terminal_games import game as _game_mod  # noqa: E402
 
 # Redirect config to a temp dir so tests never touch the user's real saves.
+# This MUST patch the terminal_games.config module (where every consumer
+# reads CONFIG_DIR/SCORES_FILE/GAME_STATE_FILE at call time via
+# 'from . import config'), not the play shim: patching the shim's copies
+# would be a silent no-op and writes would hit the user's real
+# ~/.config/terminal-games/.
 _TMP = Path(tempfile.mkdtemp())
-play.CONFIG_DIR = _TMP
-play.SCORES_FILE = _TMP / 'scores.json'
-play.GAME_STATE_FILE = _TMP / 'current_game.json'
+_config.CONFIG_DIR = _TMP
+_config.SCORES_FILE = _TMP / 'scores.json'
+_config.GAME_STATE_FILE = _TMP / 'current_game.json'
+play.CONFIG_DIR = _TMP  # keep the shim's re-exported copies in sync too
+play.SCORES_FILE = _config.SCORES_FILE
+play.GAME_STATE_FILE = _config.GAME_STATE_FILE
 
 UP, DOWN, LEFT, RIGHT = (_fake.KEY_UP, _fake.KEY_DOWN, _fake.KEY_LEFT,
                          _fake.KEY_RIGHT)
@@ -143,7 +153,7 @@ def test_save_load_roundtrip():
         data = g.get_save_data()
         if data is None:
             continue
-        (play.CONFIG_DIR / f'save_{cls.name}.json').write_text(json.dumps(data))
+        (_config.CONFIG_DIR / f'save_{cls.name}.json').write_text(json.dumps(data))
         small = MockScreen(24, 44)
         g2 = cls(small)
         g2.difficulty = 'medium'
@@ -179,22 +189,28 @@ def test_snake_tail_is_not_a_collision():
 
 
 def test_dino_fast_obstacle_collides():
+    # dino-1 rewrite: obstacles are now {'x', 'kind'} (kind looked up in
+    # terminal_games.games.dino._GEOMETRY), not raw {'x', 'art'}.
     g = play.DinoGame(MockScreen(40, 110))
     g.setup()
     g.speed = 3.0
     g.dino_y = 0.0
     g.on_ground = True
-    g.obstacles = [{'x': 8.0, 'art': play._CACTUS_SM}]
+    g.obstacles = [{'x': 8.0, 'kind': 'sm'}]
     g.update()
     assert g.game_over
 
 
 def test_pong_ai_speeds_are_distinct():
+    # ai_speed is now the AI paddle's continuous cells/tick step (added
+    # directly to a float position every tick), not a value that gets
+    # doubled and rounded into a discrete per-keypress step. Assert the
+    # tuning itself is monotonic across difficulty.
     def step(diff):
         g = play.PongGame(MockScreen())
         g.difficulty = diff
         g.setup()
-        return max(1, round(g.ai_speed * 2))
+        return g.ai_speed
     assert step('easy') < step('medium') < step('hard')
 
 
@@ -297,45 +313,120 @@ def test_frogger_home_and_hazards():
     assert g.lives == lv - 1
 
 
-def test_dino_clears_cactus_on_landing():
-    """Regression: landing beside a small cactus after clearing it must not kill."""
+def test_dino_clears_midair_cactus():
+    """Regression: sufficient jump height clears a horizontally overlapping
+    cactus. Rewritten for the new physics (dino-1): speed no longer comes
+    from score (it ramps off self.ticks now), and the geometry changed, so
+    this replaces the old score=340/'landing' scenario with a direct
+    height-vs-obstacle-height check, which is what actually mattered."""
     g = play.DinoGame(MockScreen(40, 110))
     g.setup()
-    g.score = 340                      # -> speed 2.4 (cap)
     g.on_ground = False
-    g.dino_y = -2.0
-    g.velocity = 2.0                   # lands to 0 this tick
+    g.dino_y = -3.0                    # height 3, enough to clear an sm (oh=2)
+    g.velocity = 0.0
     g.spawn_timer = 999
-    g.obstacles = [{'x': 10.0, 'art': play._CACTUS_SM}]  # ends left of the dino
+    g.obstacles = [{'x': 9.0, 'kind': 'sm'}]  # horizontally overlapping the hitbox
     g.update()
     assert not g.game_over
 
 
-def test_dino_cactus_at_snout_collides():
-    """Regression: a cactus meeting the dino's nose collides, not clips through."""
+def test_dino_cactus_at_dino_hitbox_edge_collides():
+    """Regression: a cactus overlapping the dino's (inset) hitbox column
+    collides, not clips through. Geometry changed under dino-1 (hitbox is
+    now cols dino_x+1..dino_x+2), so the exact column differs from the old
+    'snout' test, but the boundary-correctness intent is the same."""
     g = play.DinoGame(MockScreen(24, 80))
     g.setup()
     g.on_ground = True
     g.dino_y = 0.0
     g.velocity = 0.0
-    g.score = 0
     g.spawn_timer = 999
-    g.obstacles = [{'x': 11.5, 'art': play._CACTUS_SM}]  # trunk ends at the snout col
+    g.obstacles = [{'x': 9.0, 'kind': 'sm'}]  # inset hitbox lands on col 10 (=dr)
     g.update()
     assert g.game_over
 
 
 def test_dino_grounded_fast_obstacle_still_blocks_tunnel():
+    """A fast obstacle whose inset hitbox is entirely right of the dino
+    hitbox before this tick's move, and entirely left of it after, must
+    still be caught by the swept horizontal test (not just point-sampled
+    at either end)."""
     g = play.DinoGame(MockScreen(40, 110))
     g.setup()
-    g.score = 200                      # speed ~1.83
+    g.ticks = 10 ** 6                  # forces speed to the 1.5 cap
     g.on_ground = True
     g.dino_y = 0.0
     g.velocity = 0.0
     g.spawn_timer = 999
-    g.obstacles = [{'x': 11.0, 'art': play._CACTUS_SM}]  # sweeps across cols 9-10
+    g.obstacles = [{'x': 9.3, 'kind': 'sm'}]  # steps clean over a point hitbox
     g.update()
     assert g.game_over
+
+
+def test_dino_ptero_high_survivable_by_holding_duck():
+    """dino-1 / second axis: a head-height pterodactyl IS also jumpable by
+    timing alone (its band is only rows gy-2..gy-1, and any jump reaching
+    h>=3 clears it), but it is always safe if the player ducks through its
+    whole horizontal window regardless of timing (unlike ground obstacles,
+    that needs no jump-arc timing constraint to prove, so a single
+    held-duck crossing suffices). This test only asserts the duck path."""
+    g = play.DinoGame(MockScreen(60, 20))
+    g.setup()
+    g.on_ground = True
+    g.speed = 1.5
+    g.spawn_timer = 10 ** 9
+    g.obstacles = [{'x': 40.0, 'kind': 'ptero_high'}]
+    for _ in range(80):
+        if not g.obstacles or g.game_over:
+            break
+        g.keys = [DOWN]  # held every tick, as the run loop would deliver it
+        g.speed = 1.5
+        g.update()
+    assert not g.game_over
+
+
+def test_dino_every_ground_obstacle_clearable_by_some_jump_timing():
+    """Brute-force proof for dino-1: for every ground obstacle kind and
+    every speed across the game's full range, there exists at least one
+    jump-launch tick that clears it. Drives the real DinoGame/update()
+    integrator directly (not a re-derivation of the physics), so this
+    proves the shipped code, not a model of it."""
+    from terminal_games.games.dino import _GEOMETRY, SPEED_MIN, SPEED_MAX, RAMP_TICKS
+
+    def ticks_for_speed(speed):
+        # self.speed is recomputed from self.ticks on every update() call
+        # (that is the ramp), so to hold speed constant for this proof we
+        # pin self.ticks to whatever value the ramp formula maps back to
+        # that speed, once, rather than fight the recompute every tick.
+        frac = (speed - SPEED_MIN) / (SPEED_MAX - SPEED_MIN)
+        return int(round(frac * RAMP_TICKS))
+
+    def clears(kind, speed, launch_tick, x0=40):
+        g = play.DinoGame(MockScreen(60, 20))
+        g.setup()
+        g.on_ground = True
+        g.dino_y = 0.0
+        g.velocity = 0.0
+        g.spawn_timer = 10 ** 9
+        g.ticks = ticks_for_speed(speed)
+        g.obstacles = [{'x': float(x0), 'kind': kind}]
+        t = 0
+        while g.obstacles and not g.game_over and t < 300:
+            if t == launch_tick:
+                g.handle_input(SPACE)
+            g.update()
+            t += 1
+        return not g.game_over
+
+    ground_kinds = [k for k, v in _GEOMETRY.items() if v['band'] == 'ground']
+    n_speed_steps = 18
+    speeds = [round(SPEED_MIN + i * (SPEED_MAX - SPEED_MIN) / n_speed_steps, 4)
+              for i in range(n_speed_steps + 1)]
+    for kind in ground_kinds:
+        for speed in speeds:
+            max_launch = int(60 / speed) + 20
+            ok = any(clears(kind, speed, lt) for lt in range(0, max_launch))
+            assert ok, f'{kind} at speed {speed} is unclearable at every launch tick'
 
 
 def test_frogger_log_ride_does_not_drown():
@@ -433,8 +524,12 @@ def test_snake_speed_is_input_independent():
                 return k
             return ord('q')
 
-    saved = play.time
-    play.time = clock
+    # Game.run()'s tick loop lives in terminal_games.game and reads the
+    # module-level 'time' name it imported for itself, so the fake clock must
+    # be patched there (mirrors the config-module landmine above: patching
+    # play.time would be a no-op since play is just a re-export shim).
+    saved = _game_mod.time
+    _game_mod.time = clock
     try:
         # 40 direction keys within ~0.12s of simulated time. At the 110-180ms
         # cadence that is at most one move; the old bug produced ~20.
@@ -448,8 +543,131 @@ def test_snake_speed_is_input_independent():
         g.update = counted
         g.run()
     finally:
-        play.time = saved
+        _game_mod.time = saved
     assert moves[0] <= 3, f'snake moved {moves[0]}x from key input alone'
+
+
+def test_net_link_reliable_delivery_and_ack():
+    """net.py (494 lines: the wire protocol every LAN game depends on) had
+    zero test coverage (INFRA-12). Covers the core contract: a reliable
+    message is decoded exactly once by the peer, and the sender's resend
+    queue clears once the peer's ack comes back."""
+    import socket as _socket
+    a, b = _socket.socketpair()
+    link_a = link_b = None
+    try:
+        link_a = play._NetLink(a, 'host')
+        link_b = play._NetLink(b, 'guest')
+        link_a.send({'type': 'place', 'r': 1, 'c': 2})
+        msg = None
+        for _ in range(50):
+            msg = link_b.poll()
+            if msg:
+                break
+        assert msg == {'type': 'place', 'r': 1, 'c': 2}
+        for _ in range(50):
+            link_a.pump()
+            if not link_a._pending:
+                break
+        assert link_a._pending == {}, 'ack from the peer must clear the resend queue'
+        assert link_b.poll() is None, 'a message must not be delivered twice'
+    finally:
+        if link_a:
+            link_a.close()
+        if link_b:
+            link_b.close()
+
+
+def test_net_link_heartbeat_and_timeout():
+    """pump() must (a) send a heartbeat once the link has been send-silent
+    past _HEARTBEAT_INTERVAL, keeping a quiet-but-healthy peer's `alive`
+    True, and (b) flip `alive` False once genuine receive-silence exceeds
+    _PEER_TIMEOUT. This is exactly the mechanism NET-2/NET-3 depend on every
+    game's net_pump() to keep running even while paused/help-open/resizing."""
+    import socket as _socket
+    from terminal_games import net as _net_mod
+
+    class _Clock:
+        def __init__(self, t):
+            self.t = t
+
+        def monotonic(self):
+            return self.t
+
+    a, b = _socket.socketpair()
+    link_a = link_b = None
+    saved_time = _net_mod.time
+    clock = _Clock(1000.0)
+    _net_mod.time = clock
+    try:
+        link_a = play._NetLink(a, 'host')
+        link_b = play._NetLink(b, 'guest')
+        clock.t += _net_mod._NetLink._HEARTBEAT_INTERVAL + 0.1
+        link_a.pump()   # link_a has been send-silent: must emit a heartbeat
+        link_b.pump()   # link_b receives it, refreshing its own recv clock
+        assert link_b.alive
+        clock.t += _net_mod._NetLink._PEER_TIMEOUT + 0.1
+        link_b.pump()   # no further traffic arrives from link_a: peer is dead
+        assert not link_b.alive
+    finally:
+        _net_mod.time = saved_time
+        if link_a:
+            link_a.close()
+        if link_b:
+            link_b.close()
+
+
+def test_main_text_commands_need_no_curses():
+    """The whole point of `play list`/`play version`/`play cli ...` is that
+    they work with no terminal at all (piped environments like Claude
+    Code); main()'s argv dispatch had zero test coverage (INFRA-12)."""
+    import io
+    from terminal_games import main as _main_mod
+
+    def run(argv):
+        saved_argv, saved_stdout = sys.argv, sys.stdout
+        sys.argv = ['play'] + argv
+        sys.stdout = io.StringIO()
+        try:
+            _main_mod._main()
+            return sys.stdout.getvalue()
+        finally:
+            sys.argv = saved_argv
+            sys.stdout = saved_stdout
+
+    assert 'play' in run(['version']).lower()
+    assert 'Snake' in run(['list'])
+    assert run(['cli', 'start', 'snake']).strip()
+    assert run(['cli', 'show']).strip()
+    assert run(['cli', 'quit']).strip()
+
+
+def test_curses_wrapper_no_tty_no_terminal_exits_cleanly():
+    """_curses_wrapper's non-interactive fallback (no TTY, e.g. piped into
+    Claude Code) must exit(1) with a message instead of hanging or raising
+    when there is also no terminal emulator available to open into
+    (main()/_curses_wrapper had zero test coverage, INFRA-12)."""
+    from terminal_games import terminal as _terminal_mod
+
+    class _NotATty:
+        def isatty(self):
+            return False
+
+    saved_stdin, saved_stdout = sys.stdin, sys.stdout
+    saved_open = _terminal_mod._open_in_terminal
+    sys.stdin = _NotATty()
+    sys.stdout = _NotATty()
+    _terminal_mod._open_in_terminal = lambda *a, **k: False
+    try:
+        code = None
+        try:
+            _terminal_mod._curses_wrapper(lambda scr: None, 'snake')
+        except SystemExit as e:
+            code = e.code
+        assert code == 1
+    finally:
+        sys.stdin, sys.stdout = saved_stdin, saved_stdout
+        _terminal_mod._open_in_terminal = saved_open
 
 
 def _run_all():

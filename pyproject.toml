@@ -39,6 +39,7 @@ play = "play:main"
 
 [tool.setuptools]
 py-modules = ["play"]
+packages = ["terminal_games", "terminal_games.games"]
 
 [tool.setuptools.dynamic]
-version = {attr = "play.__version__"}
+version = {attr = "terminal_games._version.__version__"}
